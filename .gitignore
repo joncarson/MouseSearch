@@ -3,9 +3,6 @@
 ._.DS_Store
 reloadService.sh
 
-# GitHub directory
-.github/
-
 # Custom
 # buildImage.sh
 compose.yaml
@@ -139,7 +136,6 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.github/
 .env
 .envxxx
 data/

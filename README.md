@@ -528,3 +528,30 @@ Planned features and enhancements for future releases:
 - [x] **rTorrent** support
 
 **Have a feature request?** Open an issue on [GitHub](https://github.com/sevenlayercookie/MouseSearch/issues) to suggest new features
+
+---
+
+## Fork additions: Scheduled Searches (joncarson/MouseSearch)
+
+This fork adds **scheduled searches**: saved searches that run on a cron
+schedule and automatically grab any results you have not grabbed yet.
+
+- Open the **Scheduled searches** panel (clock icon next to settings) to
+  create searches. Each has a name, a standard 5-field cron expression
+  (e.g. `0 6 * * *` = daily at 6am), a query, and the usual search filters
+  (fields, categories, language, size, seeders).
+- On each run, results are filtered against MAM's `my_snatched` flag, the
+  torrents already in your client, and a local grab ledger
+  (`/data/scheduled_searches_state.json`) — only never-grabbed items are added.
+- Per-search options: **auto-grab** on/off (off = notify only), **grab limit
+  per run** (0 = unlimited), **freeleech only**, **use wedges** (spend a
+  personal freeleech wedge on non-freeleech grabs), torrent category, and
+  destination path. Global settings like `BLOCK_DOWNLOAD_ON_LOW_BUFFER` and
+  `AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD` are respected.
+- API: `GET/POST /api/scheduled_searches`,
+  `DELETE /api/scheduled_searches/<id>`,
+  `POST /api/scheduled_searches/<id>/run`.
+
+Docker images for this fork are published to
+`ghcr.io/joncarson/mousesearch:latest` by GitHub Actions on every push to
+`main`.

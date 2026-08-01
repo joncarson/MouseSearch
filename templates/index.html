@@ -143,6 +143,12 @@
         </form>
       </div>
 
+      <button class="navbar-toggler p-2 rounded me-2" type="button" id="scheduled-searches-button"
+        data-bs-toggle="offcanvas" data-bs-target="#scheduledSearchesOffcanvas"
+        aria-controls="scheduledSearchesOffcanvas" aria-label="Scheduled searches" title="Scheduled searches">
+        <i class="bi bi-clock-history"></i>
+      </button>
+
       <button class="navbar-toggler p-2 rounded" type="button" data-bs-toggle="offcanvas"
         data-bs-target="#settingsOffcanvas">
         <span class="navbar-toggler-icon"></span>
@@ -508,6 +514,7 @@
   {% include 'modals/wedge_purchase.html' %}
   {% include 'modals/download_confirm.html' %}
   {% include 'modals/settings_offcanvas.html' %}
+  {% include 'modals/scheduled_searches.html' %}
   {% include 'modals/insufficient_buffer.html' %}
   {% include 'modals/book_details.html' %}
 
@@ -518,6 +525,7 @@
     window.resultsSortMode = {{ RESULTS_SORT_MODE | tojson }};
   </script>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/scheduled_searches.js') }}"></script>
 
 
   <div id="toast-container" aria-live="polite" aria-atomic="true" class="position-fixed bottom-0 end-0 p-3"

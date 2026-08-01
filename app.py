@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv, dotenv_values
 from httpx import Limits, Timeout, AsyncHTTPTransport
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from urllib.parse import parse_qsl, unquote, urlparse
 
@@ -755,6 +756,8 @@ async def startup():
         scheduler.add_job(auto_buy_vip, 'date', run_date=datetime.now() + timedelta(seconds=10), id='initial_vip_buy_job')
         app.logger.info("AUTO_BUY_VIP started")
     
+    refresh_scheduled_search_jobs()
+
     if not scheduler.running:
         scheduler.start()
         app.logger.debug("AsyncIOScheduler started")
@@ -1023,6 +1026,7 @@ FALLBACK_CONFIG = {
     "ENABLE_FILESYSTEM_THUMBNAIL_CACHE": True,
     "THUMBNAIL_CACHE_MAX_SIZE_MB": 500,
     "MAX_SEARCH_RESULTS": 50,
+    "SCHEDULED_SEARCHES": [],
     "MAX_AUTOCOMPLETE_RESULTS": 20,
     "HARDCOVER_ENRICHMENT_ENABLED": True,
     "HARDCOVER_API_TOKEN": "",
@@ -1054,6 +1058,7 @@ VALID_VIP_DURATIONS = {"4", "8", "12", "max"}
 CONFIG_FILE = DATA_PATH / "config.json"
 DATABASE_FILE = DATA_PATH / "database.json"
 IP_STATE_FILE = DATA_PATH / "ip_state.json"
+SCHEDULED_SEARCH_STATE_FILE = DATA_PATH / "scheduled_searches_state.json"
 ENV_FILE = Path(".env")
 
 
@@ -6367,6 +6372,510 @@ async def check_for_unorganized_torrents():
                 failed_count=failed,
                 error=last_error,
             )
+
+
+# =========================================================================
+# Scheduled Searches
+#
+# Saved searches that run on a cron schedule and automatically grab any
+# results that have not been grabbed yet (per MAM's my_snatched flag, the
+# torrent client's MID comments, and a local grab ledger).
+# =========================================================================
+
+SCHEDULED_SEARCH_JOB_PREFIX = "scheduled_search_"
+_scheduled_search_active: set[str] = set()
+
+
+def load_scheduled_search_state() -> dict:
+    if os.path.exists(SCHEDULED_SEARCH_STATE_FILE):
+        try:
+            with open(SCHEDULED_SEARCH_STATE_FILE, "r") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except (json.JSONDecodeError, OSError):
+            app.logger.warning("[SCHED SEARCH] State file unreadable; starting fresh")
+    return {}
+
+
+def save_scheduled_search_state(state: dict):
+    try:
+        with open(SCHEDULED_SEARCH_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except OSError as e:
+        app.logger.error(f"[SCHED SEARCH] Failed to save state: {e}")
+
+
+def normalize_scheduled_search(entry) -> dict | None:
+    """Coerce a raw scheduled-search dict into a validated entry, or None."""
+    if not isinstance(entry, dict):
+        return None
+    grab_limit = parse_int_like(entry.get("grab_limit_per_run"))
+    if grab_limit is None:
+        grab_limit = 5
+    sdef = {
+        "id": str(entry.get("id") or uuid.uuid4().hex[:12]),
+        "name": str(entry.get("name") or "").strip() or "Unnamed search",
+        "enabled": coerce_bool(entry.get("enabled"), True),
+        "cron": str(entry.get("cron") or "").strip(),
+        "query": str(entry.get("query") or "").strip(),
+        "search_type": str(entry.get("search_type") or "all"),
+        "search_in": {
+            field: coerce_bool((entry.get("search_in") or {}).get(field), default)
+            for field, default in (
+                ("title", True), ("author", True), ("series", True),
+                ("narrator", False), ("description", False),
+                ("tags", False), ("filenames", False),
+            )
+        },
+        "language_ids": normalize_string_list(entry.get("language_ids")),
+        "main_cats": normalize_string_list(entry.get("main_cats")),
+        "category_ids": normalize_string_list(entry.get("category_ids")),
+        "flag_ids": normalize_string_list(entry.get("flag_ids")),
+        "flags_mode": str(entry.get("flags_mode") or "0"),
+        "min_size": str(entry.get("min_size") or "").strip(),
+        "max_size": str(entry.get("max_size") or "").strip(),
+        "size_unit": str(entry.get("size_unit") or "").strip(),
+        "min_seeders": str(entry.get("min_seeders") or "").strip(),
+        "auto_grab": coerce_bool(entry.get("auto_grab"), True),
+        "grab_limit_per_run": max(0, grab_limit),
+        "freeleech_only": coerce_bool(entry.get("freeleech_only"), False),
+        "use_wedges": coerce_bool(entry.get("use_wedges"), False),
+        "torrent_category": str(entry.get("torrent_category") or "").strip(),
+        "destination_path": str(entry.get("destination_path") or "").strip(),
+    }
+    if not sdef["cron"]:
+        return None
+    try:
+        CronTrigger.from_crontab(sdef["cron"])
+    except ValueError:
+        return None
+    return sdef
+
+
+def get_scheduled_searches() -> list[dict]:
+    raw = app.config.get("SCHEDULED_SEARCHES", [])
+    if not isinstance(raw, list):
+        return []
+    return [s for s in (normalize_scheduled_search(e) for e in raw) if s]
+
+
+def build_scheduled_search_params(sdef: dict) -> dict:
+    """Build MAM search params from a scheduled-search definition.
+
+    Mirrors the request-arg handling in mam_search() for the subset of
+    filters a scheduled search supports.
+    """
+    lang_ids = sdef["language_ids"] or [str(language_dict.get("English", 1))]
+    params = {
+        "tor[sortType]": "dateDesc",
+        "perpage": app.config.get("MAX_SEARCH_RESULTS", FALLBACK_CONFIG["MAX_SEARCH_RESULTS"]),
+        "thumbnail": "false",
+        "dlLink": "true",
+        "tor[browse_lang][]": lang_ids,
+        "tor[searchType]": sdef["search_type"] or "all",
+        "isbn": "true", "description": "false", "mediaInfo": "false",
+    }
+    search_in = dict(sdef["search_in"])
+    if search_in.get("author") and not search_in.get("title"):
+        search_in["title"] = True
+    for field, enabled in search_in.items():
+        if enabled:
+            params[f"tor[srchIn][{field}]"] = "true"
+    if sdef["query"]:
+        search_text = sdef["query"]
+        if search_in.get("author"):
+            author_variant = build_author_initials_variant(sdef["query"])
+            if author_variant:
+                quoted_variant = author_variant.replace('"', '').strip()
+                if quoted_variant:
+                    search_text = f"({sdef['query']} | \"{quoted_variant}\")"
+        params["tor[text]"] = search_text
+    if sdef["main_cats"] and "all" not in sdef["main_cats"]:
+        params["tor[main_cat][]"] = list(dict.fromkeys(sdef["main_cats"]))
+    if sdef["category_ids"]:
+        params["tor[cat][]"] = sdef["category_ids"]
+    if sdef["flag_ids"]:
+        params["tor[browseFlags][]"] = sdef["flag_ids"]
+        params["tor[browseFlagsHideVsShow]"] = sdef["flags_mode"]
+    if sdef["min_size"]:
+        params["tor[minSize]"] = sdef["min_size"]
+    if sdef["max_size"]:
+        params["tor[maxSize]"] = sdef["max_size"]
+    if (sdef["min_size"] or sdef["max_size"]) and sdef["size_unit"]:
+        params["tor[unit]"] = sdef["size_unit"]
+    if sdef["min_seeders"]:
+        params["tor[minSeeders]"] = sdef["min_seeders"]
+    return params
+
+
+def _scheduled_item_is_freeleech(item: dict, is_vip_active: bool) -> bool:
+    try:
+        if int(item.get("free", 0) or 0) == 1:
+            return True
+    except (ValueError, TypeError):
+        pass
+    try:
+        if int(item.get("personal_freeleech", 0) or 0) == 1:
+            return True
+    except (ValueError, TypeError):
+        pass
+    return coerce_bool(item.get("fl_vip"), False) and is_vip_active
+
+
+async def _grab_scheduled_result(item: dict, sdef: dict, is_vip_active: bool) -> tuple[bool, str]:
+    """Add one search result to the torrent client, mirroring client_add_torrent()."""
+    torrent_id = str(item.get("id", "") or "0")
+    title = item.get("title", "Unknown")
+    base_dl_url = f"{app.config['MAM_API_URL']}/tor/download.php/"
+    torrent_url = build_mam_download_link(base_dl_url, item.get("dl"), item.get("id"))
+    if not torrent_url:
+        return False, "no download link in result"
+
+    is_free = _scheduled_item_is_freeleech(item, is_vip_active)
+    should_use_personal_freeleech = False
+    if not is_free:
+        if sdef["use_wedges"]:
+            should_use_personal_freeleech = True
+        elif app.config.get("AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD", False):
+            should_use_personal_freeleech = True
+            if app.config.get("AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD_MIN_SIZE_ENABLED", False):
+                min_size_mb = app.config.get("AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD_MIN_SIZE_MB", 0)
+                torrent_size_gb = parse_size_to_gb(item.get("size", "0 GiB"), default=None)
+                if torrent_size_gb is None or torrent_size_gb * 1024 <= min_size_mb:
+                    should_use_personal_freeleech = False
+    if should_use_personal_freeleech:
+        torrent_url = append_personal_freeleech_flag(torrent_url)
+
+    # Respect the global low-buffer block unless the grab is freeleech.
+    if (not is_free and not should_use_personal_freeleech
+            and app.config.get("BLOCK_DOWNLOAD_ON_LOW_BUFFER", True)):
+        stats = await get_user_stats()
+        if stats:
+            torrent_size_gb = parse_size_to_gb(item.get("size", "0 GiB"))
+            if torrent_size_gb > stats["buffer_gb"]:
+                return False, f"insufficient buffer ({stats['buffer_gb']:.2f} GB free, {torrent_size_gb:.2f} GB needed)"
+
+    category = (
+        sdef["torrent_category"]
+        or app.config.get("TORRENT_CLIENT_CATEGORY", "")
+    )
+
+    client_add_kwargs = {}
+    hash_val = None
+    client_type = app.config.get("TORRENT_CLIENT_TYPE", "qbittorrent").lower()
+    if client_type in {"qbittorrent", "transmission"}:
+        torrent_file_data, torrent_filename = await fetch_torrent_file_from_mam(torrent_url)
+        if torrent_file_data is None:
+            return False, "failed to fetch .torrent file from MAM"
+        client_add_kwargs = {
+            "torrent_data": torrent_file_data,
+            "torrent_filename": torrent_filename,
+        }
+        hash_val = calculate_torrent_hash_from_bytes(torrent_file_data)
+
+    result = await torrent_client.add_torrent(torrent_url, category, mid=torrent_id, **client_add_kwargs)
+    if result.get("status") != "success":
+        return False, result.get("message", "torrent client rejected the add")
+
+    main_cat = item.get("main_cat", "")
+    resolved_hash = normalize_info_hash(result.get("hash") or hash_val or "")
+    metadata_payload = {
+        "mid": torrent_id,
+        "author": parse_mam_metadata(item.get("author_info", "")),
+        "title": title,
+        "added_on": datetime.now().isoformat(),
+        "status": "pending",
+        "retry_count": 0,
+        "series_info": parse_series_info(item.get("series_info", "")),
+        "category": get_category_name(main_cat),
+        "main_cat": main_cat,
+        "catname": item.get("catname", ""),
+        "filetype": item.get("filetype", ""),
+        "download_link": torrent_url,
+        "custom_relative_path": None,
+        "custom_destination_path": sdef["destination_path"] or None,
+    }
+    if resolved_hash:
+        if auto_organize_tracking_enabled():
+            metadata = load_database()
+            metadata[resolved_hash] = metadata_payload
+            save_database(metadata)
+        monitoring_state[resolved_hash] = {"added_at": time.time()}
+        start_monitoring_loop()
+    elif torrent_id != "0":
+        pending_mid_resolutions[torrent_id] = {
+            "added_at": time.time(),
+            "metadata": metadata_payload,
+        }
+        start_monitoring_loop()
+    return True, "added"
+
+
+async def run_scheduled_search(search_id: str, *, manual: bool = False) -> dict:
+    """Execute one scheduled search: search MAM, grab ungrabbed results."""
+    sdef = next((s for s in get_scheduled_searches() if s["id"] == search_id), None)
+    summary = {
+        "search_id": search_id,
+        "status": "error",
+        "found": 0,
+        "new": 0,
+        "grabbed": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+    if sdef is None:
+        summary["errors"].append("scheduled search not found")
+        return summary
+    if search_id in _scheduled_search_active:
+        summary["status"] = "already_running"
+        return summary
+    _scheduled_search_active.add(search_id)
+    try:
+        return await _run_scheduled_search_inner(sdef, summary, manual=manual)
+    finally:
+        _scheduled_search_active.discard(search_id)
+        state = load_scheduled_search_state()
+        entry = state.setdefault(search_id, {})
+        entry["last_run"] = datetime.now().isoformat()
+        entry["last_manual"] = manual
+        entry["last_status"] = summary["status"]
+        entry["last_found"] = summary["found"]
+        entry["last_new"] = summary["new"]
+        entry["last_grabbed"] = summary["grabbed"]
+        entry["last_errors"] = summary["errors"][:10]
+        entry["total_grabbed"] = int(entry.get("total_grabbed", 0)) + summary["grabbed"]
+        save_scheduled_search_state(state)
+
+
+async def _run_scheduled_search_inner(sdef: dict, summary: dict, *, manual: bool) -> dict:
+    search_id = sdef["id"]
+    label = sdef["name"]
+    app.logger.info(f"[SCHED SEARCH] Running '{label}' ({search_id}, manual={manual})")
+
+    if not await login_mam():
+        summary["errors"].append("MAM login failed")
+        return summary
+
+    is_vip_active = False
+    try:
+        user_data = await fetch_mam_json_load()
+        vip_until = (user_data or {}).get("vip_until")
+        if vip_until:
+            vip_dt = datetime.fromisoformat(str(vip_until).strip().replace(" ", "T"))
+            is_vip_active = vip_dt > datetime.utcnow()
+    except Exception:
+        is_vip_active = False
+
+    params = build_scheduled_search_params(sdef)
+    headers = {"Cookie": "; ".join(f"{k}={v}" for k, v in mam_session_cookies.items())}
+    try:
+        response = await request_mam(
+            "GET",
+            f"{app.config['MAM_API_URL']}/tor/js/loadSearchJSONbasic.php",
+            params=params,
+            headers=headers,
+        )
+        response.raise_for_status()
+        results = response.json().get("data", [])
+    except Exception as e:
+        summary["errors"].append(format_mam_search_error(e))
+        app.logger.error(f"[SCHED SEARCH] '{label}' search failed: {e}")
+        return summary
+
+    summary["found"] = len(results)
+
+    # Torrents already in the client (matched via MID= comment) count as grabbed.
+    client_mids: set[str] = set()
+    if torrent_client:
+        try:
+            status = await torrent_client.get_status()
+            if status.get("status") == "success":
+                for torrent in await torrent_client.get_torrents_with_metadata():
+                    mid_match = re.search(r"MID=(\d+)", torrent.get("comment", "") or "")
+                    if mid_match:
+                        client_mids.add(mid_match.group(1))
+        except Exception as e:
+            app.logger.warning(f"[SCHED SEARCH] Could not list client torrents: {e}")
+
+    state = load_scheduled_search_state()
+    grabbed_ids = state.get(search_id, {}).get("grabbed_ids", {})
+    if not isinstance(grabbed_ids, dict):
+        grabbed_ids = {}
+
+    fresh = []
+    for item in results:
+        item_id = str(item.get("id", ""))
+        if not item_id:
+            continue
+        if str(item.get("my_snatched", 0)) == "1":
+            continue
+        if item_id in client_mids or item_id in grabbed_ids:
+            continue
+        if sdef["freeleech_only"] and not _scheduled_item_is_freeleech(item, is_vip_active):
+            continue
+        fresh.append(item)
+    summary["new"] = len(fresh)
+
+    if not sdef["auto_grab"]:
+        summary["status"] = "ok"
+        app.logger.info(f"[SCHED SEARCH] '{label}': {len(fresh)} new result(s); auto-grab disabled")
+        if fresh:
+            await broadcast_toast(
+                f"Scheduled search '{label}' found {len(fresh)} new result(s) (auto-grab off)",
+                "info",
+            )
+        return summary
+
+    if torrent_client is None:
+        summary["errors"].append("torrent client not initialized")
+        return summary
+
+    grab_limit = sdef["grab_limit_per_run"]
+    to_grab = fresh if grab_limit == 0 else fresh[:grab_limit]
+    summary["skipped"] = len(fresh) - len(to_grab)
+
+    for item in to_grab:
+        item_id = str(item.get("id", ""))
+        title = item.get("title", "Unknown")
+        try:
+            ok, message = await _grab_scheduled_result(item, sdef, is_vip_active)
+        except Exception as e:
+            ok, message = False, str(e)
+            app.logger.error(f"[SCHED SEARCH] '{label}' grab crashed for {item_id}: {e}", exc_info=True)
+        if ok:
+            summary["grabbed"] += 1
+            grabbed_ids[item_id] = datetime.now().isoformat()
+            app.logger.info(f"[SCHED SEARCH] '{label}' grabbed '{title}' ({item_id})")
+        else:
+            summary["errors"].append(f"{title}: {message}")
+            app.logger.warning(f"[SCHED SEARCH] '{label}' skipped '{title}': {message}")
+        # Space out MAM download requests.
+        await asyncio.sleep(2)
+
+    state = load_scheduled_search_state()
+    state.setdefault(search_id, {})["grabbed_ids"] = grabbed_ids
+    save_scheduled_search_state(state)
+
+    summary["status"] = "ok" if not summary["errors"] else "partial"
+    app.logger.info(
+        f"[SCHED SEARCH] '{label}' done: found={summary['found']} new={summary['new']} "
+        f"grabbed={summary['grabbed']} errors={len(summary['errors'])}"
+    )
+    if summary["grabbed"]:
+        await broadcast_toast(
+            f"Scheduled search '{label}' grabbed {summary['grabbed']} new torrent(s)",
+            "success",
+        )
+    return summary
+
+
+def refresh_scheduled_search_jobs():
+    """Sync APScheduler jobs with the SCHEDULED_SEARCHES config."""
+    searches = get_scheduled_searches()
+    wanted_job_ids = set()
+    for sdef in searches:
+        if not sdef["enabled"]:
+            continue
+        job_id = f"{SCHEDULED_SEARCH_JOB_PREFIX}{sdef['id']}"
+        wanted_job_ids.add(job_id)
+        scheduler.add_job(
+            run_scheduled_search,
+            CronTrigger.from_crontab(sdef["cron"]),
+            args=[sdef["id"]],
+            id=job_id,
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+            coalesce=True,
+        )
+    for job in scheduler.get_jobs():
+        if job.id.startswith(SCHEDULED_SEARCH_JOB_PREFIX) and job.id not in wanted_job_ids:
+            try:
+                scheduler.remove_job(job.id)
+            except Exception:
+                pass
+    app.logger.info(f"[SCHED SEARCH] {len(wanted_job_ids)} scheduled search job(s) active")
+
+
+@app.route("/api/scheduled_searches", methods=["GET"])
+async def api_list_scheduled_searches():
+    state = load_scheduled_search_state()
+    payload = []
+    for sdef in get_scheduled_searches():
+        s_state = state.get(sdef["id"], {})
+        job = scheduler.get_job(f"{SCHEDULED_SEARCH_JOB_PREFIX}{sdef['id']}")
+        payload.append({
+            **sdef,
+            "state": {
+                "last_run": s_state.get("last_run"),
+                "last_status": s_state.get("last_status"),
+                "last_found": s_state.get("last_found"),
+                "last_new": s_state.get("last_new"),
+                "last_grabbed": s_state.get("last_grabbed"),
+                "last_errors": s_state.get("last_errors", []),
+                "total_grabbed": s_state.get("total_grabbed", 0),
+                "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+                "running": sdef["id"] in _scheduled_search_active,
+            },
+        })
+    return jsonify({"scheduled_searches": payload})
+
+
+@app.route("/api/scheduled_searches", methods=["POST"])
+async def api_upsert_scheduled_search():
+    incoming = await request.get_json()
+    if not isinstance(incoming, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+    raw_cron = str(incoming.get("cron") or "").strip()
+    if raw_cron:
+        try:
+            CronTrigger.from_crontab(raw_cron)
+        except ValueError as e:
+            return jsonify({"error": f"invalid cron expression: {e}"}), 400
+    sdef = normalize_scheduled_search(incoming)
+    if sdef is None:
+        return jsonify({"error": "invalid scheduled search (a valid cron expression is required)"}), 400
+    if not sdef["query"] and not sdef["category_ids"] and not sdef["flag_ids"] and not sdef["main_cats"]:
+        return jsonify({"error": "search needs at least a query, category, or flag filter"}), 400
+
+    config = load_config()
+    searches = [s for s in (normalize_scheduled_search(e) for e in config.get("SCHEDULED_SEARCHES", [])) if s]
+    existing_index = next((i for i, s in enumerate(searches) if s["id"] == sdef["id"]), None)
+    if existing_index is None:
+        searches.append(sdef)
+    else:
+        searches[existing_index] = sdef
+    config["SCHEDULED_SEARCHES"] = searches
+    save_config(config)
+    await load_new_app_config()
+    refresh_scheduled_search_jobs()
+    return jsonify({"status": "success", "scheduled_search": sdef})
+
+
+@app.route("/api/scheduled_searches/<search_id>", methods=["DELETE"])
+async def api_delete_scheduled_search(search_id):
+    config = load_config()
+    searches = [s for s in (normalize_scheduled_search(e) for e in config.get("SCHEDULED_SEARCHES", [])) if s]
+    remaining = [s for s in searches if s["id"] != search_id]
+    if len(remaining) == len(searches):
+        return jsonify({"error": "not found"}), 404
+    config["SCHEDULED_SEARCHES"] = remaining
+    save_config(config)
+    await load_new_app_config()
+    refresh_scheduled_search_jobs()
+    state = load_scheduled_search_state()
+    if search_id in state:
+        del state[search_id]
+        save_scheduled_search_state(state)
+    return jsonify({"status": "success"})
+
+
+@app.route("/api/scheduled_searches/<search_id>/run", methods=["POST"])
+async def api_run_scheduled_search(search_id):
+    summary = await run_scheduled_search(search_id, manual=True)
+    status_code = 200 if summary["status"] in ("ok", "partial", "already_running") else 400
+    return jsonify(summary), status_code
 
 
 if __name__ == "__main__":

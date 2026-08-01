@@ -1,0 +1,260 @@
+<!-- --- OFFCANVAS: SCHEDULED SEARCHES --- -->
+<div class="offcanvas offcanvas-end roundTop roundBottom w-md-50" tabindex="-1" id="scheduledSearchesOffcanvas"
+  aria-labelledby="scheduledSearchesOffcanvasLabel">
+  <div class="offcanvas-header border-bottom roundTop">
+    <h5 class="offcanvas-title fw-bold d-flex align-items-center" id="scheduledSearchesOffcanvasLabel">
+      <i class="bi bi-clock-history me-2 text-primary"></i>Scheduled Searches
+    </h5>
+    <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+  </div>
+
+  <div class="offcanvas-body p-0">
+    <div class="bg-body-tertiary p-3 h-100 overflow-y-auto">
+
+      <div id="ss-alert-container"></div>
+
+      <!-- LIST VIEW -->
+      <div id="ss-list-view">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h6 class="text-uppercase section-title m-0">Saved Searches</h6>
+          <button type="button" class="btn btn-sm btn-outline-primary py-0 text-nowrap" id="ss-add-button">
+            <i class="bi bi-plus-lg"></i> Add Search
+          </button>
+        </div>
+
+        <div id="ss-list-loading" class="text-center py-4 d-none">
+          <div class="spinner-border spinner-border-sm text-secondary" role="status" aria-hidden="true"></div>
+          <span class="small text-body-secondary ms-2">Loading...</span>
+        </div>
+
+        <div id="ss-list-empty" class="text-center text-body-secondary small py-4 d-none">
+          No scheduled searches yet. Click <strong>Add Search</strong> to create one that runs automatically
+          and grabs new results.
+        </div>
+
+        <div id="ss-list"></div>
+      </div>
+
+      <!-- ADD/EDIT FORM VIEW -->
+      <div id="ss-form-view" class="d-none">
+        <form id="scheduled-search-form" autocomplete="off">
+          <input type="hidden" id="ss-id" value="">
+
+          <h6 class="text-uppercase section-title mb-3" id="ss-form-title">New Scheduled Search</h6>
+
+          <div class="card card-body border-secondary-subtle mb-3">
+            <div class="form-floating mb-3">
+              <input type="text" class="form-control" id="ss-name" placeholder="Name" required>
+              <label for="ss-name">Name</label>
+            </div>
+
+            <div class="mb-2">
+              <label for="ss-cron" class="form-label small fw-bold mb-1">Schedule (cron)</label>
+              <input type="text" class="form-control font-monospace" id="ss-cron" placeholder="0 6 * * *" required>
+              <div class="form-text small">
+                Standard 5-field crontab: minute, hour, day of month, month, day of week.
+                For example <code>0 6 * * *</code> = daily at 6:00, <code>*/30 * * * *</code> = every 30 minutes.
+              </div>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+              <span class="small text-muted align-self-center me-1">Quick pick:</span>
+              <button type="button" class="btn btn-sm btn-outline-primary rounded-pill ss-cron-preset"
+                data-cron="0 * * * *">Hourly</button>
+              <button type="button" class="btn btn-sm btn-outline-primary rounded-pill ss-cron-preset"
+                data-cron="0 6 * * *">Daily 6am</button>
+              <button type="button" class="btn btn-sm btn-outline-primary rounded-pill ss-cron-preset"
+                data-cron="0 6 * * 1">Weekly</button>
+            </div>
+
+            <div class="form-check form-switch mt-3 mb-0">
+              <input class="form-check-input" type="checkbox" id="ss-enabled" checked>
+              <label class="form-check-label small" for="ss-enabled">Enabled</label>
+            </div>
+          </div>
+
+          <h6 class="text-uppercase section-title mb-3">Search</h6>
+          <div class="card card-body border-secondary-subtle mb-3">
+            <div class="form-floating mb-3">
+              <input type="text" class="form-control" id="ss-query" placeholder="Search terms">
+              <label for="ss-query"><i class="bi bi-search me-2"></i>Search terms</label>
+            </div>
+
+            <h6 class="filter-section-title">Search In</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-title" data-field="title"
+                    checked>
+                  <label class="form-check-label" for="ss-in-title">Title</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-author" data-field="author"
+                    checked>
+                  <label class="form-check-label" for="ss-in-author">Author</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-series" data-field="series"
+                    checked>
+                  <label class="form-check-label" for="ss-in-series">Series</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-narrator"
+                    data-field="narrator">
+                  <label class="form-check-label" for="ss-in-narrator">Narrator</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-description"
+                    data-field="description">
+                  <label class="form-check-label" for="ss-in-description">Description</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-tags" data-field="tags">
+                  <label class="form-check-label" for="ss-in-tags">Tags</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <div class="form-check">
+                  <input class="form-check-input ss-search-in" type="checkbox" id="ss-in-filenames"
+                    data-field="filenames">
+                  <label class="form-check-label" for="ss-in-filenames">Filenames (Slow)</label>
+                </div>
+              </div>
+            </div>
+
+            <h6 class="filter-section-title">Main Categories</h6>
+            <div class="row g-2 mb-1">
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-main-cat" type="checkbox" id="ss-cat-audiobooks" value="13">
+                  <label class="form-check-label" for="ss-cat-audiobooks">Audiobooks</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-main-cat" type="checkbox" id="ss-cat-ebooks" value="14">
+                  <label class="form-check-label" for="ss-cat-ebooks">E-Books</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-main-cat" type="checkbox" id="ss-cat-musicology" value="15">
+                  <label class="form-check-label" for="ss-cat-musicology">Musicology</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check">
+                  <input class="form-check-input ss-main-cat" type="checkbox" id="ss-cat-radio" value="16">
+                  <label class="form-check-label" for="ss-cat-radio">Radio</label>
+                </div>
+              </div>
+            </div>
+            <div class="form-text small mb-3">Leave all unchecked to search every category.</div>
+
+            <h6 class="filter-section-title">Language</h6>
+            <select id="ss-language" class="form-select" multiple placeholder="Select languages..."
+              autocomplete="off" aria-label="Languages">
+              {% for lang, lang_id in LANGUAGE_CHOICES %}
+              <option value="{{ lang_id }}" {% if lang_id == DEFAULT_LANGUAGE_ID %}selected{% endif %}>{{ lang }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <h6 class="text-uppercase section-title mb-3">Filters</h6>
+          <div class="card card-body border-secondary-subtle mb-3">
+            <div class="input-group input-group-sm mb-3">
+              <span class="input-group-text">Min seeders</span>
+              <input type="number" min="0" class="form-control" id="ss-min-seeders" placeholder="Any">
+            </div>
+
+            <h6 class="filter-section-title">File Size</h6>
+            <div class="input-group mb-3">
+              <div class="form-floating">
+                <input type="number" min="0" class="form-control" id="ss-min-size" placeholder="Min">
+                <label for="ss-min-size">Min</label>
+              </div>
+              <div class="form-floating">
+                <input type="number" min="0" class="form-control" id="ss-max-size" placeholder="Max">
+                <label for="ss-max-size">Max</label>
+              </div>
+              <select class="form-select bg-body-tertiary" style="max-width: fit-content;" id="ss-size-unit"
+                aria-label="Size unit">
+                <option value="1048576" selected>MiB</option>
+                <option value="1073741824">GiB</option>
+                <option value="1024">KiB</option>
+                <option value="1">Bytes</option>
+              </select>
+            </div>
+
+            <div class="form-check mb-0">
+              <input class="form-check-input" type="checkbox" id="ss-freeleech-only">
+              <label class="form-check-label" for="ss-freeleech-only">Freeleech only (only grab results that are
+                free to download)</label>
+            </div>
+          </div>
+
+          <h6 class="text-uppercase section-title mb-3">Auto-Grab</h6>
+          <div class="card card-body border-secondary-subtle mb-3">
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="ss-auto-grab" checked>
+              <label class="form-check-label small fw-bold" for="ss-auto-grab">Automatically download new
+                results</label>
+            </div>
+
+            <div class="mb-3">
+              <label for="ss-grab-limit" class="form-label small mb-1">Grab limit per run</label>
+              <input type="number" min="0" step="1" class="form-control" id="ss-grab-limit" value="5">
+              <div class="form-text small">Maximum torrents to grab each time the search runs. 0 = unlimited.</div>
+            </div>
+
+            <div class="form-check mb-0">
+              <input class="form-check-input" type="checkbox" id="ss-use-wedges">
+              <label class="form-check-label" for="ss-use-wedges">Use Freeleech Wedges on non-freeleech grabs</label>
+            </div>
+            <div class="form-text small text-warning-emphasis mb-0">
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>This spends your personal Freeleech Wedges
+              automatically, one per grabbed torrent.
+            </div>
+          </div>
+
+          <h6 class="text-uppercase section-title mb-3">Download Options</h6>
+          <div class="card card-body border-secondary-subtle mb-3">
+            <div class="form-floating mb-3">
+              <input type="text" class="form-control" id="ss-torrent-category" placeholder="Category">
+              <label for="ss-torrent-category">Torrent client category (optional)</label>
+            </div>
+
+            <div class="mb-0">
+              <label for="ss-destination-select" class="form-label text-muted small">Destination</label>
+              <select class="form-select mb-2" id="ss-destination-select" aria-label="Destination path"></select>
+              <input type="text" class="form-control d-none" id="ss-destination-custom"
+                placeholder="/data/media/audiobooks" aria-label="Custom destination path">
+              <div class="form-text small">Where auto-organize should place grabbed downloads. Leave as default to
+                use your configured organized path.</div>
+            </div>
+          </div>
+
+          <div class="d-grid gap-2">
+            <button type="submit" class="btn btn-primary" id="ss-save-button">
+              <i class="bi bi-save me-2"></i>Save Scheduled Search
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="ss-cancel-button">
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+
+    </div>
+  </div>
+</div>
