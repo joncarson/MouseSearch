@@ -6556,10 +6556,24 @@ async def _grab_scheduled_result(item: dict, sdef: dict, is_vip_active: bool) ->
             if torrent_size_gb > stats["buffer_gb"]:
                 return False, f"insufficient buffer ({stats['buffer_gb']:.2f} GB free, {torrent_size_gb:.2f} GB needed)"
 
-    category = (
-        sdef["torrent_category"]
-        or app.config.get("TORRENT_CLIENT_CATEGORY", "")
-    )
+    # Mirror the UI download flow: type-specific defaults keyed on the result's
+    # main category, overridable per scheduled search.
+    main_cat_id = str(item.get("main_cat", "") or "").strip()
+    category = sdef["torrent_category"]
+    if not category:
+        for row in app.config.get("TYPE_SPECIFIC_TORRENT_CATEGORIES", []) or []:
+            if row.get("default_main_cat") and str(row["default_main_cat"]) == main_cat_id:
+                category = row.get("default_torrent_category") or ""
+                break
+    if not category:
+        category = app.config.get("TORRENT_CLIENT_CATEGORY", "")
+
+    destination_path = sdef["destination_path"]
+    if not destination_path:
+        for row in app.config.get("DESTINATION_PATHS", []) or []:
+            if row.get("default_main_cat") and str(row["default_main_cat"]) == main_cat_id:
+                destination_path = row.get("path") or ""
+                break
 
     client_add_kwargs = {}
     hash_val = None
@@ -6594,7 +6608,7 @@ async def _grab_scheduled_result(item: dict, sdef: dict, is_vip_active: bool) ->
         "filetype": item.get("filetype", ""),
         "download_link": torrent_url,
         "custom_relative_path": None,
-        "custom_destination_path": sdef["destination_path"] or None,
+        "custom_destination_path": destination_path or None,
     }
     if resolved_hash:
         if auto_organize_tracking_enabled():
