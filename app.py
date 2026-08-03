@@ -6385,6 +6385,21 @@ async def check_for_unorganized_torrents():
 SCHEDULED_SEARCH_JOB_PREFIX = "scheduled_search_"
 _scheduled_search_active: set[str] = set()
 
+# Mirror the option sets offered by the advanced search offcanvas.
+SCHEDULED_SEARCH_TYPES = {"all", "active", "inactive", "fl", "fl-VIP", "VIP", "nVIP", "nMeta"}
+SCHEDULED_SEARCH_SCOPES = {"torrents", "bookmarks", "mine", "new", "allReseed", "myReseed"}
+
+
+def _normalize_scheduled_date(value) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return raw
+
 
 def load_scheduled_search_state() -> dict:
     if os.path.exists(SCHEDULED_SEARCH_STATE_FILE):
@@ -6419,7 +6434,16 @@ def normalize_scheduled_search(entry) -> dict | None:
         "enabled": coerce_bool(entry.get("enabled"), True),
         "cron": str(entry.get("cron") or "").strip(),
         "query": str(entry.get("query") or "").strip(),
-        "search_type": str(entry.get("search_type") or "all"),
+        "search_type": (
+            str(entry.get("search_type") or "all")
+            if str(entry.get("search_type") or "all") in SCHEDULED_SEARCH_TYPES
+            else "all"
+        ),
+        "search_scope": (
+            str(entry.get("search_scope") or "torrents")
+            if str(entry.get("search_scope") or "torrents") in SCHEDULED_SEARCH_SCOPES
+            else "torrents"
+        ),
         "search_in": {
             field: coerce_bool((entry.get("search_in") or {}).get(field), default)
             for field, default in (
@@ -6436,7 +6460,14 @@ def normalize_scheduled_search(entry) -> dict | None:
         "min_size": str(entry.get("min_size") or "").strip(),
         "max_size": str(entry.get("max_size") or "").strip(),
         "size_unit": str(entry.get("size_unit") or "").strip(),
+        "start_date": _normalize_scheduled_date(entry.get("start_date")),
+        "end_date": _normalize_scheduled_date(entry.get("end_date")),
         "min_seeders": str(entry.get("min_seeders") or "").strip(),
+        "max_seeders": str(entry.get("max_seeders") or "").strip(),
+        "min_leechers": str(entry.get("min_leechers") or "").strip(),
+        "max_leechers": str(entry.get("max_leechers") or "").strip(),
+        "min_snatched": str(entry.get("min_snatched") or "").strip(),
+        "max_snatched": str(entry.get("max_snatched") or "").strip(),
         "auto_grab": coerce_bool(entry.get("auto_grab"), True),
         "grab_limit_per_run": max(0, grab_limit),
         "freeleech_only": coerce_bool(entry.get("freeleech_only"), False),
@@ -6493,19 +6524,34 @@ def build_scheduled_search_params(sdef: dict) -> dict:
         params["tor[text]"] = search_text
     if sdef["main_cats"] and "all" not in sdef["main_cats"]:
         params["tor[main_cat][]"] = list(dict.fromkeys(sdef["main_cats"]))
+    if sdef["search_scope"] and sdef["search_scope"] != "torrents":
+        params["tor[searchIn]"] = sdef["search_scope"]
     if sdef["category_ids"]:
         params["tor[cat][]"] = sdef["category_ids"]
     if sdef["flag_ids"]:
         params["tor[browseFlags][]"] = sdef["flag_ids"]
         params["tor[browseFlagsHideVsShow]"] = sdef["flags_mode"]
+    if sdef["start_date"]:
+        params["tor[startDate]"] = sdef["start_date"]
+    if sdef["end_date"]:
+        params["tor[endDate]"] = sdef["end_date"]
     if sdef["min_size"]:
         params["tor[minSize]"] = sdef["min_size"]
     if sdef["max_size"]:
         params["tor[maxSize]"] = sdef["max_size"]
     if (sdef["min_size"] or sdef["max_size"]) and sdef["size_unit"]:
         params["tor[unit]"] = sdef["size_unit"]
-    if sdef["min_seeders"]:
-        params["tor[minSeeders]"] = sdef["min_seeders"]
+    stat_mappings = {
+        "min_seeders": "tor[minSeeders]",
+        "max_seeders": "tor[maxSeeders]",
+        "min_leechers": "tor[minLeechers]",
+        "max_leechers": "tor[maxLeechers]",
+        "min_snatched": "tor[minSnatched]",
+        "max_snatched": "tor[maxSnatched]",
+    }
+    for field, tor_name in stat_mappings.items():
+        if sdef[field]:
+            params[tor_name] = sdef[field]
     return params
 
 

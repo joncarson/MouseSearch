@@ -13,8 +13,11 @@
     const SEARCH_IN_FIELDS = ['title', 'author', 'series', 'narrator', 'description', 'tags', 'filenames'];
 
     let entriesById = {};
-    let editingEntry = null; // carries fields not exposed in the form (category_ids, flag_ids, ...)
     let langTomSelect = null;
+    let subcatTomSelect = null;
+    let categoryDefs = null;         // legacy category definitions ({categories: [...]})
+    let categoryDefsPromise = null;
+    let subcatSelection = [];        // authoritative selected subcategory IDs (survives rebuilds)
     let listLoaded = false;
 
     // ---------- Helpers ----------
@@ -47,6 +50,22 @@
             year: 'numeric', month: 'short', day: 'numeric',
             hour: 'numeric', minute: '2-digit'
         });
+    }
+
+    function setRadioValue(name, value, fallback) {
+        const radios = document.querySelectorAll(`input[name="${name}"]`);
+        let matched = false;
+        radios.forEach(radio => {
+            radio.checked = radio.value === value;
+            if (radio.checked) matched = true;
+        });
+        if (!matched) {
+            radios.forEach(radio => { radio.checked = radio.value === fallback; });
+        }
+    }
+
+    function getRadioValue(name, fallback) {
+        return document.querySelector(`input[name="${name}"]:checked`)?.value || fallback;
     }
 
     function statusBadge(entry) {
@@ -178,11 +197,9 @@
     function showListView() {
         document.getElementById('ss-form-view')?.classList.add('d-none');
         document.getElementById('ss-list-view')?.classList.remove('d-none');
-        editingEntry = null;
     }
 
     function showFormView(entry) {
-        editingEntry = entry || null;
         document.getElementById('ss-form-title').textContent =
             entry ? `Edit: ${entry.name}` : 'New Scheduled Search';
 
@@ -197,19 +214,36 @@
             cb.checked = !!searchIn[cb.dataset.field];
         });
 
+        setRadioValue('ss-search-type', entry?.search_type || 'all', 'all');
+        setRadioValue('ss-search-scope', entry?.search_scope || 'torrents', 'torrents');
+
         const mainCats = entry?.main_cats || [];
         document.querySelectorAll('.ss-main-cat').forEach(cb => {
             cb.checked = mainCats.includes(cb.value);
         });
+        setSubcatValues(entry?.category_ids || []);
 
         const defaultLang = window.DEFAULT_LANGUAGE_ID != null ? [String(window.DEFAULT_LANGUAGE_ID)] : [];
         const langIds = (entry?.language_ids?.length ? entry.language_ids : defaultLang).map(String);
         setLanguageValues(langIds);
 
-        document.getElementById('ss-min-seeders').value = entry?.min_seeders || '';
+        const flagIds = (entry?.flag_ids || []).map(String);
+        document.querySelectorAll('.ss-flag').forEach(cb => {
+            cb.checked = flagIds.includes(cb.value);
+        });
+        setRadioValue('ss-flags-mode', entry?.flags_mode || '0', '0');
+
+        document.getElementById('ss-start-date').value = entry?.start_date || '';
+        document.getElementById('ss-end-date').value = entry?.end_date || '';
         document.getElementById('ss-min-size').value = entry?.min_size || '';
         document.getElementById('ss-max-size').value = entry?.max_size || '';
         document.getElementById('ss-size-unit').value = entry?.size_unit || '1048576';
+        document.getElementById('ss-min-seeders').value = entry?.min_seeders || '';
+        document.getElementById('ss-max-seeders').value = entry?.max_seeders || '';
+        document.getElementById('ss-min-leechers').value = entry?.min_leechers || '';
+        document.getElementById('ss-max-leechers').value = entry?.max_leechers || '';
+        document.getElementById('ss-min-snatched').value = entry?.min_snatched || '';
+        document.getElementById('ss-max-snatched').value = entry?.max_snatched || '';
         document.getElementById('ss-freeleech-only').checked = !!entry?.freeleech_only;
 
         document.getElementById('ss-auto-grab').checked = entry ? !!entry.auto_grab : true;
@@ -255,6 +289,125 @@
         }
         const el = document.getElementById('ss-language');
         return el ? Array.from(el.selectedOptions).map(opt => opt.value) : [];
+    }
+
+    // ---------- Subcategory select (same data source as the advanced panel's #catSelect) ----------
+
+    function loadCategoryDefs() {
+        if (categoryDefs) return Promise.resolve(categoryDefs);
+        if (categoryDefsPromise) return categoryDefsPromise;
+
+        // Reuse main.js's cached loader when available; otherwise fetch the same
+        // legacy definitions JSON that populates the advanced panel's #catSelect.
+        const loader = (typeof window.loadLegacyCategoryDefinitions === 'function')
+            ? window.loadLegacyCategoryDefinitions()
+            : fetch(window.LEGACY_CATEGORY_URL || `${BASE}/static/categoryDefinitionsLegacy.json`,
+                { cache: 'no-store' })
+                .then(response => response.ok ? response.json() : null)
+                .catch(() => null);
+
+        categoryDefsPromise = Promise.resolve(loader).then(data => {
+            categoryDefs = data;
+            return data;
+        });
+        return categoryDefsPromise;
+    }
+
+    function getCheckedMainCats() {
+        return Array.from(document.querySelectorAll('.ss-main-cat:checked')).map(cb => cb.value);
+    }
+
+    function readSubcatSelectionFromControl() {
+        if (subcatTomSelect) {
+            const value = subcatTomSelect.getValue();
+            return (Array.isArray(value) ? value : [value]).filter(Boolean).map(String);
+        }
+        const el = document.getElementById('ss-subcats');
+        return el ? Array.from(el.selectedOptions).map(opt => opt.value) : [];
+    }
+
+    // Rebuilds the subcategory options for the currently checked main categories.
+    // Groups for unchecked main cats only contribute the subcategories that are
+    // already selected, so editing an entry never silently drops values.
+    function rebuildSubcatOptions() {
+        const select = document.getElementById('ss-subcats');
+        if (!select || !categoryDefs?.categories?.length) return;
+
+        const checkedMains = getCheckedMainCats();
+        const selected = new Set(subcatSelection.map(String));
+        const known = new Set();
+
+        const groups = [];
+        categoryDefs.categories.forEach(mainCat => {
+            const mainId = String(mainCat.main_cat);
+            const allowAll = !checkedMains.length || checkedMains.includes(mainId);
+            const subs = (mainCat.subcategories || []).filter(sub => {
+                known.add(String(sub.category));
+                return allowAll || selected.has(String(sub.category));
+            });
+            if (subs.length) {
+                groups.push({
+                    id: mainId,
+                    label: mainCat.name,
+                    subs: subs.map(sub => ({ value: String(sub.category), text: sub.name }))
+                });
+            }
+        });
+
+        // Keep selected IDs that aren't in the definitions file at all.
+        const unknown = [...selected].filter(value => !known.has(value));
+        if (unknown.length) {
+            groups.push({ id: '__other__', label: 'Other', subs: unknown.map(value => ({ value, text: value })) });
+        }
+
+        if (subcatTomSelect) {
+            subcatTomSelect.clear(true);
+            subcatTomSelect.clearOptions();
+            if (typeof subcatTomSelect.clearOptionGroups === 'function') subcatTomSelect.clearOptionGroups();
+            groups.forEach(group => {
+                subcatTomSelect.addOptionGroup(group.id, { label: group.label });
+                group.subs.forEach(sub => {
+                    subcatTomSelect.addOption({ value: sub.value, text: sub.text, optgroup: group.id });
+                });
+            });
+            subcatTomSelect.setValue([...selected], true);
+            subcatTomSelect.refreshOptions(false);
+        } else {
+            select.innerHTML = '';
+            groups.forEach(group => {
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = group.label;
+                group.subs.forEach(sub => {
+                    const option = new Option(sub.text, sub.value);
+                    option.selected = selected.has(sub.value);
+                    optgroup.appendChild(option);
+                });
+                select.appendChild(optgroup);
+            });
+        }
+    }
+
+    function setSubcatValues(values) {
+        subcatSelection = (values || []).map(String).filter(Boolean);
+        loadCategoryDefs().then(rebuildSubcatOptions);
+    }
+
+    function initSubcatSelect() {
+        const el = document.getElementById('ss-subcats');
+        if (!el) return;
+        if (typeof TomSelect !== 'undefined') {
+            subcatTomSelect = new TomSelect(el, {
+                plugins: ['remove_button', 'checkbox_options'],
+                create: false,
+                maxItems: null,
+                maxOptions: 1000,
+                hidePlaceholder: true
+            });
+            subcatTomSelect.on('change', () => { subcatSelection = readSubcatSelectionFromControl(); });
+        } else {
+            el.addEventListener('change', () => { subcatSelection = readSubcatSelectionFromControl(); });
+        }
+        loadCategoryDefs().then(rebuildSubcatOptions);
     }
 
     // ---------- Destination path (reuses DESTINATION_PATHS like the download confirm modal) ----------
@@ -304,17 +457,25 @@
             enabled: document.getElementById('ss-enabled').checked,
             cron: document.getElementById('ss-cron').value.trim(),
             query: document.getElementById('ss-query').value.trim(),
-            search_type: editingEntry?.search_type || 'all',
+            search_type: getRadioValue('ss-search-type', 'all'),
+            search_scope: getRadioValue('ss-search-scope', 'torrents'),
             search_in: searchIn,
             language_ids: getLanguageValues(),
             main_cats: Array.from(document.querySelectorAll('.ss-main-cat:checked')).map(cb => cb.value),
-            category_ids: editingEntry?.category_ids || [],
-            flag_ids: editingEntry?.flag_ids || [],
-            flags_mode: editingEntry?.flags_mode || '0',
+            category_ids: subcatSelection.slice(),
+            flag_ids: Array.from(document.querySelectorAll('.ss-flag:checked')).map(cb => cb.value),
+            flags_mode: getRadioValue('ss-flags-mode', '0'),
+            start_date: document.getElementById('ss-start-date').value || '',
+            end_date: document.getElementById('ss-end-date').value || '',
             min_size: document.getElementById('ss-min-size').value.trim(),
             max_size: document.getElementById('ss-max-size').value.trim(),
             size_unit: document.getElementById('ss-size-unit').value,
             min_seeders: document.getElementById('ss-min-seeders').value.trim(),
+            max_seeders: document.getElementById('ss-max-seeders').value.trim(),
+            min_leechers: document.getElementById('ss-min-leechers').value.trim(),
+            max_leechers: document.getElementById('ss-max-leechers').value.trim(),
+            min_snatched: document.getElementById('ss-min-snatched').value.trim(),
+            max_snatched: document.getElementById('ss-max-snatched').value.trim(),
             auto_grab: document.getElementById('ss-auto-grab').checked,
             grab_limit_per_run: Math.max(0, parseInt(document.getElementById('ss-grab-limit').value, 10) || 0),
             freeleech_only: document.getElementById('ss-freeleech-only').checked,
@@ -432,6 +593,14 @@
         if (!offcanvasEl) return;
 
         initLanguageSelect();
+        initSubcatSelect();
+
+        // Narrow (or widen) the subcategory options as main categories change.
+        document.querySelectorAll('.ss-main-cat').forEach(cb => {
+            cb.addEventListener('change', () => {
+                loadCategoryDefs().then(rebuildSubcatOptions);
+            });
+        });
 
         // The launcher button toggles the offcanvas via data-bs-toggle, so its
         // tooltip has to be created directly (it can't also carry data-bs-toggle="tooltip").
