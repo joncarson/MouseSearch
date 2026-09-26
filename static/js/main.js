@@ -6831,7 +6831,10 @@ document.addEventListener("DOMContentLoaded", async function () {
                 try {
                     const data = JSON.parse(rawJson);
                     openBookDetailsModal(data, targetRow);
-                } catch (e) { console.error("Deep link parse error", e); }
+                } catch (e) {
+                    console.error("Deep link parse error", e);
+                    showToast("Couldn't open that book's details (unexpected metadata from MAM).", 'danger');
+                }
             }
         }
     }
@@ -6871,6 +6874,7 @@ document.addEventListener("DOMContentLoaded", async function () {
                         openBookDetailsModal(data, resultItem);
                     } catch (e) {
                         console.error("Error parsing book data", e);
+                        showToast("Couldn't open that book's details (unexpected metadata from MAM).", 'danger');
                     }
                 }
             }
@@ -7185,7 +7189,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         document.getElementById('detail-series').textContent = seriesLabel || '---';
         document.getElementById('detail-language').textContent = getLanguageName(data.lang_code);
         document.getElementById('detail-filetype').textContent = data.filetype;
-        document.getElementById('detail-size').textContent = data.size.replace('iB', 'B');
+        document.getElementById('detail-size').textContent = String(data.size ?? '').replace('iB', 'B');
         document.getElementById('detail-added').textContent = new Date(data.added).toLocaleDateString();
         document.getElementById('detail-seeders').textContent = data.seeders;
         document.getElementById('detail-leechers').textContent = data.leechers;
@@ -7193,7 +7197,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         const tagsContainer = document.getElementById('detail-tags');
         tagsContainer.innerHTML = '';
         if (data.tags) {
-            data.tags.split(',').forEach(tag => {
+            String(data.tags).split(',').forEach(tag => {
                 if (!tag.trim()) return;
                 const badge = document.createElement('span');
                 badge.className = 'badge bg-body-secondary text-body-emphasis border border-secondary-subtle fw-normal text-wrap text-start lh-base';
