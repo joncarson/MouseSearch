@@ -1,5 +1,5 @@
 # app.py - Quart (async) version
-from quart import Quart, request, render_template, Response, jsonify, send_file, g
+from quart import Quart, request, render_template, Response, jsonify, send_file, g, url_for
 import httpx
 import json
 import copy
@@ -972,6 +972,28 @@ def get_app_version():
 @app.context_processor
 def inject_version():
     return dict(APP_VERSION=get_app_version())
+
+# --- STATIC ASSET CACHE-BUSTING ---
+# Quart serves /static with a 12h max-age and browsers honour it, so after an image
+# update users kept running the previous main.js until the cache expired. Tag every
+# static URL with a short content hash so a changed file is a new URL.
+_static_hash_cache = {}
+
+def static_url(filename):
+    v = _static_hash_cache.get(filename)
+    if v is None:
+        try:
+            with open(Path(app.static_folder) / filename, "rb") as f:
+                v = hashlib.sha256(f.read()).hexdigest()[:12]
+        except Exception as e:
+            app.logger.warning(f"static_url: could not hash {filename}: {e}")
+            v = ""
+        _static_hash_cache[filename] = v
+    if v:
+        return url_for("static", filename=filename, v=v)
+    return url_for("static", filename=filename)
+
+app.jinja_env.globals["static_url"] = static_url
     
 # Define fallback values
 FALLBACK_CONFIG = {
