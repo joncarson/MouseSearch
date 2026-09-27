@@ -37,6 +37,12 @@
               Hardcover
             </button>
           </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="kindle-tab" data-bs-toggle="tab" data-bs-target="#kindle-pane"
+              type="button" role="tab" aria-controls="kindle-pane" aria-selected="false">
+              <i class="bi bi-tablet me-1"></i>Kindle
+            </button>
+          </li>
         </ul>
       </div>
 
@@ -589,6 +595,145 @@
                     <span id="settings-hardcover-status-icon" aria-hidden="true"></span>
                     <span id="settings-hardcover-status-message">Change the API key field to test Hardcover.</span>
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+        <div class="tab-pane fade" id="kindle-pane" role="tabpanel" aria-labelledby="kindle-tab" tabindex="0">
+          <h6 class="text-uppercase section-title mb-3 d-flex align-items-center gap-1">
+            Send to Kindle
+            <i class="bi bi-info-circle-fill text-secondary ms-1" data-bs-html="true" data-bs-toggle="tooltip"
+              data-bs-placement="top" title="<div class='text-start'>
+                          <div class='fw-bold mb-1'>Emails finished ebooks to your Kindle</div>
+                          <ul class='list-unstyled mb-0'>
+                            <li>- add the From address below to Amazon's approved sender list</li>
+                            <li>- send to your @kindle.com address</li>
+                            <li>- audiobooks and other non-document files are skipped</li>
+                          </ul>
+                        </div>">
+            </i>
+          </h6>
+
+          <div class="card mb-3 border-secondary-subtle toggle-card">
+            <div
+              class="card-header border-bottom-0 bg-transparent d-flex justify-content-between align-items-center py-2 cursor-pointer noselect"
+              onclick="toggleCardSwitch('SEND_TO_KINDLE_ENABLED')">
+              <span class="small fw-bold d-flex align-items-center">
+                <i class="bi bi-send me-2"></i> Send to Kindle After Download
+              </span>
+              <div class="form-check form-switch m-0">
+                <input class="form-check-input" type="checkbox" id="SEND_TO_KINDLE_ENABLED"
+                  name="SEND_TO_KINDLE_ENABLED" {% if SEND_TO_KINDLE_ENABLED %}checked{% endif %}
+                  data-collapse-target="#collapse-send-to-kindle">
+              </div>
+            </div>
+            <div id="collapse-send-to-kindle" class="collapse {% if SEND_TO_KINDLE_ENABLED %}show{% endif %}">
+              <div class="card-body border-top pt-2 pb-2">
+                <div class="form-text small mb-2">
+                  When a download finishes, MouseSearch emails the book files to every Kindle address below.
+                  Each address must have this From address on its
+                  <em>Approved Personal Document E-mail List</em> in Amazon's Manage Your Content and Devices.
+                </div>
+                <div class="mb-3">
+                  <label for="SEND_TO_KINDLE_RECIPIENTS" class="form-label small fw-bold">Kindle Addresses</label>
+                  <textarea class="form-control font-monospace" id="SEND_TO_KINDLE_RECIPIENTS"
+                    name="SEND_TO_KINDLE_RECIPIENTS" rows="2" autocomplete="off"
+                    placeholder="you@kindle.com, partner@kindle.com">{{ SEND_TO_KINDLE_RECIPIENTS | join(', ') }}</textarea>
+                  <div class="form-text small">Separate multiple addresses with commas, spaces, or new lines.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="SEND_TO_KINDLE_FORMATS" class="form-label small fw-bold">Formats to Send</label>
+                  <input type="text" class="form-control font-monospace" id="SEND_TO_KINDLE_FORMATS"
+                    name="SEND_TO_KINDLE_FORMATS" value="{{ SEND_TO_KINDLE_FORMATS | join(', ') }}"
+                    placeholder="epub, azw3, mobi, pdf" autocomplete="off">
+                  <div class="form-text small">
+                    In preference order &mdash; a release with both EPUB and MOBI only sends the first match.
+                    Amazon accepts {{ KINDLE_DOCUMENT_FORMATS | join(', ') }}.
+                  </div>
+                </div>
+                <div class="row g-2">
+                  <div class="col-6">
+                    <label for="SEND_TO_KINDLE_MAX_FILES" class="form-label small fw-bold">Max Files</label>
+                    <input type="number" class="form-control" id="SEND_TO_KINDLE_MAX_FILES"
+                      name="SEND_TO_KINDLE_MAX_FILES" min="1" value="{{ SEND_TO_KINDLE_MAX_FILES }}">
+                    <div class="form-text small">Per download (book packs).</div>
+                  </div>
+                  <div class="col-6">
+                    <label for="SEND_TO_KINDLE_MAX_ATTACHMENT_MB" class="form-label small fw-bold">Max Size</label>
+                    <div class="input-group">
+                      <input type="number" class="form-control" id="SEND_TO_KINDLE_MAX_ATTACHMENT_MB"
+                        name="SEND_TO_KINDLE_MAX_ATTACHMENT_MB" min="0" step="1"
+                        value="{{ SEND_TO_KINDLE_MAX_ATTACHMENT_MB | int }}">
+                      <span class="input-group-text">MB</span>
+                    </div>
+                    <div class="form-text small">Amazon rejects over ~50 MB.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <hr class="settings-divider my-4">
+
+          <h6 class="text-uppercase section-title mb-3">Outgoing Mail (SMTP)</h6>
+
+          <div class="card mb-3 border-secondary-subtle">
+            <div class="card-body">
+              <div class="form-floating mb-3">
+                <input type="text" class="form-control" id="SEND_TO_KINDLE_SMTP_HOST" name="SEND_TO_KINDLE_SMTP_HOST"
+                  value="{{ SEND_TO_KINDLE_SMTP_HOST }}" placeholder="smtp.example.com" autocomplete="off">
+                <label for="SEND_TO_KINDLE_SMTP_HOST" class="small">SMTP Server</label>
+              </div>
+              <div class="row g-2 mb-3">
+                <div class="col-5">
+                  <div class="form-floating">
+                    <input type="number" class="form-control" id="SEND_TO_KINDLE_SMTP_PORT"
+                      name="SEND_TO_KINDLE_SMTP_PORT" min="1" value="{{ SEND_TO_KINDLE_SMTP_PORT }}"
+                      placeholder="587">
+                    <label for="SEND_TO_KINDLE_SMTP_PORT" class="small">Port</label>
+                  </div>
+                </div>
+                <div class="col-7">
+                  <div class="form-floating">
+                    <select class="form-select" id="SEND_TO_KINDLE_SMTP_SECURITY" name="SEND_TO_KINDLE_SMTP_SECURITY">
+                      {% for mode in SEND_TO_KINDLE_SECURITY_MODES %}
+                      <option value="{{ mode.id }}" {% if SEND_TO_KINDLE_SMTP_SECURITY == mode.id %}selected{% endif %}>
+                        {{ mode.label }}
+                      </option>
+                      {% endfor %}
+                    </select>
+                    <label for="SEND_TO_KINDLE_SMTP_SECURITY" class="small">Encryption</label>
+                  </div>
+                </div>
+              </div>
+              <div class="form-floating mb-3">
+                <input type="text" class="form-control" id="SEND_TO_KINDLE_SMTP_USERNAME"
+                  name="SEND_TO_KINDLE_SMTP_USERNAME" value="{{ SEND_TO_KINDLE_SMTP_USERNAME }}"
+                  placeholder="SMTP username" autocomplete="off">
+                <label for="SEND_TO_KINDLE_SMTP_USERNAME" class="small">Username (blank = no auth)</label>
+              </div>
+              <div class="form-floating mb-3">
+                <input type="password" class="form-control" id="SEND_TO_KINDLE_SMTP_PASSWORD"
+                  name="SEND_TO_KINDLE_SMTP_PASSWORD" value="{{ SEND_TO_KINDLE_SMTP_PASSWORD }}"
+                  placeholder="SMTP password" autocomplete="new-password">
+                <label for="SEND_TO_KINDLE_SMTP_PASSWORD" class="small">Password</label>
+              </div>
+              <div class="form-floating">
+                <input type="email" class="form-control" id="SEND_TO_KINDLE_FROM_ADDRESS"
+                  name="SEND_TO_KINDLE_FROM_ADDRESS" value="{{ SEND_TO_KINDLE_FROM_ADDRESS }}"
+                  placeholder="kindle-sender@example.com" autocomplete="off">
+                <label for="SEND_TO_KINDLE_FROM_ADDRESS" class="small">From Address (approved sender)</label>
+              </div>
+              <button type="button" class="btn btn-outline-primary btn-sm w-100 mt-3" id="test-kindle-email-button">
+                <i class="bi bi-plug me-1"></i>Test SMTP Connection
+              </button>
+              <div id="settings-kindle-status" class="alert alert-secondary small mt-3 mb-0" role="status">
+                <div class="d-flex align-items-center gap-2">
+                  <span id="settings-kindle-status-icon" aria-hidden="true"></span>
+                  <span id="settings-kindle-status-message">Test the connection after entering SMTP details.</span>
                 </div>
               </div>
             </div>

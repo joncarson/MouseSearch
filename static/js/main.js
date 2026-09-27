@@ -3457,6 +3457,55 @@ document.addEventListener("DOMContentLoaded", async function () {
         }
     }
 
+    async function checkKindleSmtpConnection() {
+        const payload = {
+            SEND_TO_KINDLE_SMTP_HOST: document.getElementById('SEND_TO_KINDLE_SMTP_HOST')?.value || '',
+            SEND_TO_KINDLE_SMTP_PORT: document.getElementById('SEND_TO_KINDLE_SMTP_PORT')?.value || '',
+            SEND_TO_KINDLE_SMTP_SECURITY: document.getElementById('SEND_TO_KINDLE_SMTP_SECURITY')?.value || '',
+            SEND_TO_KINDLE_SMTP_USERNAME: document.getElementById('SEND_TO_KINDLE_SMTP_USERNAME')?.value || '',
+            SEND_TO_KINDLE_SMTP_PASSWORD: document.getElementById('SEND_TO_KINDLE_SMTP_PASSWORD')?.value || '',
+            SEND_TO_KINDLE_FROM_ADDRESS: document.getElementById('SEND_TO_KINDLE_FROM_ADDRESS')?.value || '',
+        };
+        const statusIds = {
+            alertId: 'settings-kindle-status',
+            iconId: 'settings-kindle-status-icon',
+            messageId: 'settings-kindle-status-message',
+        };
+
+        if (!String(payload.SEND_TO_KINDLE_SMTP_HOST || '').trim()) {
+            setInlineConnectionStatus({
+                ...statusIds,
+                state: 'idle',
+                message: 'Enter an SMTP server to test Send to Kindle.',
+            });
+            return;
+        }
+
+        setInlineConnectionStatus({ ...statusIds, state: 'idle', message: 'Connecting to the SMTP server...' });
+
+        try {
+            const response = await fetch(`${APP_BASE}/api/settings/test-kindle-email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await response.json().catch(() => ({}));
+            const rawStatus = String(data.status || '').toLowerCase();
+            const state = rawStatus === 'success' ? 'success' : rawStatus === 'idle' ? 'idle' : 'error';
+            setInlineConnectionStatus({
+                ...statusIds,
+                state,
+                message: String(data.message || `SMTP probe failed (HTTP ${response.status}).`).trim(),
+            });
+        } catch (error) {
+            setInlineConnectionStatus({
+                ...statusIds,
+                state: 'error',
+                message: error?.message || 'Unable to reach the SMTP probe endpoint.',
+            });
+        }
+    }
+
     function captureSettingsSnapshot() {
         if (!settingsForm) return;
         settingsSnapshot = {};
@@ -3748,6 +3797,18 @@ document.addEventListener("DOMContentLoaded", async function () {
                 }
             })
             .catch(() => showToast("Error saving settings.", 'danger'));
+    });
+
+    document.getElementById('test-kindle-email-button')?.addEventListener('click', async function () {
+        const originalHtml = this.innerHTML;
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Testing...';
+        try {
+            await checkKindleSmtpConnection();
+        } finally {
+            this.disabled = false;
+            this.innerHTML = originalHtml;
+        }
     });
 
     document.getElementById('organize-now-button')?.addEventListener('click', async function () {

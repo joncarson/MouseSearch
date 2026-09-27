@@ -307,6 +307,17 @@ Notes:
 | `HARDCOVER_SEARCH_PER_PAGE` | No | Hardcover candidates checked per search path. Defaults to `5`. |
 | `RESULTS_DISPLAY_FIELDS` | No | List of fields to display in search results. Options: `date_uploaded`, `file_type`, `file_size`, `snatches`, `seeders`, `category`, `language`, `narrator`, `series`. |
 | `RESULTS_SORT_MODE` | No | Initial search-results sort mode. The latest selection is persisted in `config.json`. Defaults to `quality_desc`. |
+| `SEND_TO_KINDLE_ENABLED` | No | Set to `true` to email finished downloads to your Kindle. Defaults to `false`. |
+| `SEND_TO_KINDLE_RECIPIENTS` | If Send to Kindle is enabled | Kindle delivery addresses, comma/space/newline separated (e.g. `you@kindle.com, partner@kindle.com`). |
+| `SEND_TO_KINDLE_FORMATS` | No | File extensions to send, in preference order. Defaults to `epub, azw3, mobi, pdf`. |
+| `SEND_TO_KINDLE_MAX_FILES` | No | Maximum attachments mailed per download (book packs). Defaults to `3`. |
+| `SEND_TO_KINDLE_MAX_ATTACHMENT_MB` | No | Skip files larger than this; Amazon rejects attachments over ~50 MB. `0` disables the check. Defaults to `49`. |
+| `SEND_TO_KINDLE_SMTP_HOST` | If Send to Kindle is enabled | Outgoing SMTP server. |
+| `SEND_TO_KINDLE_SMTP_PORT` | No | SMTP port. Defaults to `587` (`465` is assumed when encryption is `ssl` and no port is set). |
+| `SEND_TO_KINDLE_SMTP_SECURITY` | No | `starttls`, `ssl`, or `none`. Defaults to `starttls`. |
+| `SEND_TO_KINDLE_SMTP_USERNAME` | No | SMTP username. Leave blank for an unauthenticated relay. |
+| `SEND_TO_KINDLE_SMTP_PASSWORD` | No | SMTP password (or app password). |
+| `SEND_TO_KINDLE_FROM_ADDRESS` | If Send to Kindle is enabled | Sender address. Must be on Amazon's Approved Personal Document E-mail List. Defaults to `SEND_TO_KINDLE_SMTP_USERNAME` when that is an email address. |
 | `APP_LOG_LEVEL` | No | Application log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Defaults to `INFO`. |
 | `LOG_HTTP_REQUESTS` | No | Enables app-level HTTP request logging with sanitized query params. Defaults to `false`. |
 | `LOG_HTTP_REQUESTS_INCLUDE_STATIC` | No | Includes `/static/*` and favicon requests in app-level request logs. Defaults to `false`. |
@@ -328,6 +339,7 @@ If `AUTO_TASK_WEBHOOK_URL` is set, MouseSearch sends webhook notifications for:
 * `auto_update_ip`
 * `auto_organize_on_download`
 * `auto_organize_on_schedule`
+* `auto_send_to_kindle`
 
 Set `AUTO_TASK_WEBHOOK_EVENTS` if you only want a subset of those events.
 
@@ -551,6 +563,30 @@ schedule and automatically grab any results you have not grabbed yet.
 - API: `GET/POST /api/scheduled_searches`,
   `DELETE /api/scheduled_searches/<id>`,
   `POST /api/scheduled_searches/<id>/run`.
+
+## Fork additions: Send to Kindle (joncarson/MouseSearch)
+
+This fork can email a book to your Kindle as soon as its download finishes.
+
+- Configure it in **Settings → Kindle**: the Kindle delivery addresses, which
+  formats to send (in preference order), attachment limits, and the outgoing
+  SMTP server. **Test SMTP Connection** opens a session with the server without
+  sending mail.
+- Amazon only accepts documents from an approved sender, so add the configured
+  **From address** to the *Approved Personal Document E-mail List* under Amazon's
+  *Manage Your Content and Devices → Preferences → Personal Document Settings*.
+- On completion MouseSearch picks the document files under the download path,
+  keeping one file per book (a release with both EPUB and MOBI only sends the
+  first configured format) and skipping anything over the attachment limit.
+  Audiobooks and other non-document files are ignored, so nothing is mailed for
+  them.
+- The result is recorded on the torrent's record in `database.json`
+  (`kindle_status`, `kindle_sent_at`, `kindle_files`, `kindle_recipients`), which
+  also keeps a re-checked torrent from being mailed twice. Enabling Send to
+  Kindle turns on that metadata tracking even when auto-organize is off.
+- `POST /send_to_kindle/<hash>` re-sends an already-downloaded torrent, ignoring
+  the "already sent" marker. Failures also fire the `auto_send_to_kindle`
+  auto-task webhook event.
 
 Docker images for this fork are published to
 `ghcr.io/joncarson/mousesearch:latest` by GitHub Actions on every push to

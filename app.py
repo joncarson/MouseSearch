@@ -15,6 +15,10 @@ import shutil
 import uuid
 import sqlite3
 import ipaddress
+import smtplib
+import ssl
+import mimetypes
+from email.message import EmailMessage
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -529,6 +533,72 @@ AUTO_ORGANIZE_MEDIA_TYPES = [
     {"id": "16", "label": "Radio"},
 ]
 ALLOWED_AUTO_ORGANIZE_MAIN_CATS = {item["id"] for item in AUTO_ORGANIZE_MEDIA_TYPES}
+
+# --- SEND TO KINDLE ---
+# Formats Amazon's "Send to Kindle" service accepts as email attachments.
+KINDLE_DOCUMENT_FORMATS = ["epub", "pdf", "azw3", "mobi", "doc", "docx", "txt", "rtf", "htm", "html"]
+DEFAULT_SEND_TO_KINDLE_FORMATS = ["epub", "azw3", "mobi", "pdf"]
+# Python's mimetypes database does not know the ebook formats, and a bare
+# application/octet-stream attachment is easier for mail filters to reject.
+KINDLE_MIME_TYPES = {
+    "epub": ("application", "epub+zip"),
+    "azw3": ("application", "vnd.amazon.ebook"),
+    "mobi": ("application", "x-mobipocket-ebook"),
+}
+SEND_TO_KINDLE_SECURITY_MODES = [
+    {"id": "starttls", "label": "STARTTLS (usually port 587)"},
+    {"id": "ssl", "label": "SSL/TLS (usually port 465)"},
+    {"id": "none", "label": "None (plain SMTP)"},
+]
+EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+
+
+def _split_list_like(value):
+    """Split a config value that may arrive as a list or a delimited string."""
+    if isinstance(value, (list, tuple, set)):
+        text = ",".join(str(item) for item in value)
+    else:
+        text = str(value or "")
+    return [part for part in re.split(r"[\s,;]+", text) if part]
+
+
+def normalize_email_list(value):
+    """Normalize an address list into unique, syntactically valid addresses."""
+    addresses = []
+    seen = set()
+    for raw in _split_list_like(value):
+        address = raw.strip().strip("<>")
+        if not address or not EMAIL_ADDRESS_PATTERN.match(address):
+            continue
+        key = address.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        addresses.append(address)
+    return addresses
+
+
+def normalize_kindle_formats(value):
+    """Normalize an extension allow-list ("EPUB, .pdf") into lowercase extensions."""
+    formats = []
+    seen = set()
+    for raw in _split_list_like(value):
+        ext = raw.strip().lstrip(".").lower()
+        if not ext or ext in seen:
+            continue
+        seen.add(ext)
+        formats.append(ext)
+    return formats
+
+
+def normalize_smtp_security(value):
+    normalized = str(value or "").strip().lower()
+    # "tls" is left out on purpose: it usually means STARTTLS in the wild.
+    if normalized in ("ssl", "smtps", "ssl/tls"):
+        return "ssl"
+    if normalized in ("none", "plain", "off", "insecure"):
+        return "none"
+    return "starttls"
 
 
 def normalize_destination_paths(value, fallback_path):
@@ -1061,6 +1131,17 @@ FALLBACK_CONFIG = {
     "RESULTS_DISPLAY_FIELDS": ["narrator", "series", "file_size", "file_type", "seeders"],
     "RESULTS_SORT_MODE": DEFAULT_RESULTS_SORT_MODE,
     "SEARCH_FILTER_DEFAULTS": copy.deepcopy(DEFAULT_SEARCH_FILTER_DEFAULTS),
+    "SEND_TO_KINDLE_ENABLED": False,
+    "SEND_TO_KINDLE_RECIPIENTS": [],
+    "SEND_TO_KINDLE_FORMATS": list(DEFAULT_SEND_TO_KINDLE_FORMATS),
+    "SEND_TO_KINDLE_MAX_FILES": 3,
+    "SEND_TO_KINDLE_MAX_ATTACHMENT_MB": 49.0,
+    "SEND_TO_KINDLE_SMTP_HOST": "",
+    "SEND_TO_KINDLE_SMTP_PORT": 587,
+    "SEND_TO_KINDLE_SMTP_SECURITY": "starttls",
+    "SEND_TO_KINDLE_SMTP_USERNAME": "",
+    "SEND_TO_KINDLE_SMTP_PASSWORD": "",
+    "SEND_TO_KINDLE_FROM_ADDRESS": "",
 }
 ENV_ONLY_CONFIG_KEYS = {"QBITTORRENT_VERIFY_WEBUI_CERTIFICATE"}
 
@@ -1633,6 +1714,8 @@ def load_config():
         "HARDCOVER_RATE_LIMIT",
         "HARDCOVER_CONCURRENCY",
         "HARDCOVER_SEARCH_PER_PAGE",
+        "SEND_TO_KINDLE_SMTP_PORT",
+        "SEND_TO_KINDLE_MAX_FILES",
     ]:
         try:
             config[key] = int(config[key])
@@ -1667,6 +1750,10 @@ def load_config():
         config["HARDCOVER_CONCURRENCY"] = FALLBACK_CONFIG["HARDCOVER_CONCURRENCY"]
     if config["HARDCOVER_SEARCH_PER_PAGE"] <= 0:
         config["HARDCOVER_SEARCH_PER_PAGE"] = FALLBACK_CONFIG["HARDCOVER_SEARCH_PER_PAGE"]
+    if config["SEND_TO_KINDLE_SMTP_PORT"] <= 0:
+        config["SEND_TO_KINDLE_SMTP_PORT"] = FALLBACK_CONFIG["SEND_TO_KINDLE_SMTP_PORT"]
+    if config["SEND_TO_KINDLE_MAX_FILES"] <= 0:
+        config["SEND_TO_KINDLE_MAX_FILES"] = FALLBACK_CONFIG["SEND_TO_KINDLE_MAX_FILES"]
 
     # Floats
     for key in [
@@ -1677,7 +1764,8 @@ def load_config():
         "AUTO_BUY_UPLOAD_BONUS_THRESHOLD",
         "AUTO_BUY_UPLOAD_BONUS_AMOUNT",
         "AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD_MIN_SIZE_MB",
-        "HARDCOVER_MATCH_THRESHOLD"
+        "HARDCOVER_MATCH_THRESHOLD",
+        "SEND_TO_KINDLE_MAX_ATTACHMENT_MB",
     ]:
         try:
             config[key] = float(config[key])
@@ -1721,6 +1809,7 @@ def load_config():
         "RTORRENT_DIGEST_AUTH",
         "HARDCOVER_ENRICHMENT_ENABLED",
         "QBITTORRENT_VERIFY_WEBUI_CERTIFICATE",
+        "SEND_TO_KINDLE_ENABLED",
     ]:
         config[key] = coerce_bool(config.get(key), FALLBACK_CONFIG[key])
         val = config[key]
@@ -1729,6 +1818,18 @@ def load_config():
             config[key] = str(val).lower() in ('true', '1', 't', 'yes', 'on')
 
     config["MAM_PROXY_URL"] = normalize_proxy_url(config.get("MAM_PROXY_URL"))
+
+    if (
+        not math.isfinite(config["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"])
+        or config["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"] < 0
+    ):
+        config["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"] = FALLBACK_CONFIG["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"]
+    config["SEND_TO_KINDLE_SMTP_SECURITY"] = normalize_smtp_security(config.get("SEND_TO_KINDLE_SMTP_SECURITY"))
+    config["SEND_TO_KINDLE_RECIPIENTS"] = normalize_email_list(config.get("SEND_TO_KINDLE_RECIPIENTS"))
+    config["SEND_TO_KINDLE_FORMATS"] = (
+        normalize_kindle_formats(config.get("SEND_TO_KINDLE_FORMATS"))
+        or list(DEFAULT_SEND_TO_KINDLE_FORMATS)
+    )
 
     config["RESULTS_DISPLAY_FIELDS"] = normalize_result_display_fields(
         config.get("RESULTS_DISPLAY_FIELDS"),
@@ -2395,6 +2496,32 @@ async def monitor_downloads_loop():
                             error=str(e),
                             **_get_torrent_metadata_summary(h),
                         )
+
+                if app.config.get("SEND_TO_KINDLE_ENABLED"):
+                    try:
+                        kindle_details = _get_torrent_metadata_summary(h)
+                        success, msg = await send_download_to_kindle(h)
+                        if success:
+                            app.logger.info(f"[MONITOR] Send to Kindle succeeded for {h}: {msg}")
+                        else:
+                            app.logger.warning(f"[MONITOR] Send to Kindle failed for {h}: {msg}")
+                        await send_auto_task_webhook_notification(
+                            "auto_send_to_kindle",
+                            success,
+                            task="send_to_kindle",
+                            message=msg,
+                            **kindle_details,
+                        )
+                    except Exception as e:
+                        app.logger.error(f"[MONITOR] Exception during Send to Kindle for {h}: {e}", exc_info=True)
+                        await send_auto_task_webhook_notification(
+                            "auto_send_to_kindle",
+                            False,
+                            task="send_to_kindle",
+                            error=str(e),
+                            **_get_torrent_metadata_summary(h),
+                        )
+
                 if h in monitoring_state:
                     del monitoring_state[h]
                 
@@ -4234,7 +4361,7 @@ async def client_add_torrent():
             }
 
             if resolved_hash:
-                if auto_organize_tracking_enabled():
+                if download_tracking_enabled():
                     metadata = load_database()
                     metadata[resolved_hash] = metadata_payload
                     save_database(metadata)
@@ -4274,7 +4401,7 @@ async def client_add_torrent():
         app.logger.warning(f"WARNING: running hash calculation for torrent URL without MID: {torrent_url}")
         hash_val = await calculate_torrent_hash_from_url(torrent_url)
     
-    if auto_organize_tracking_enabled():
+    if download_tracking_enabled():
         if not hash_val:
             auto_organize_warning = "Unable to calculate hash - auto-organization will not work."
         else:
@@ -4452,6 +4579,17 @@ def auto_organize_tracking_enabled():
         app.config.get("AUTO_ORGANIZE_ON_ADD")
         or app.config.get("AUTO_ORGANIZE_ON_SCHEDULE")
     )
+
+
+def download_tracking_enabled():
+    """
+    True when a finished download needs a metadata record in database.json.
+
+    Auto-organize needs it to know where a torrent belongs; Send to Kindle needs
+    it for the title/author on the email and for the "already sent" marker that
+    keeps a re-checked torrent from being mailed twice.
+    """
+    return bool(auto_organize_tracking_enabled() or app.config.get("SEND_TO_KINDLE_ENABLED"))
 
 
 def load_database():
@@ -5538,6 +5676,8 @@ async def index():
         AVAILABLE_CLIENTS=available_clients,  # Pass the list here
         categories=categories,
         AUTO_ORGANIZE_MEDIA_TYPES=AUTO_ORGANIZE_MEDIA_TYPES,
+        KINDLE_DOCUMENT_FORMATS=KINDLE_DOCUMENT_FORMATS,
+        SEND_TO_KINDLE_SECURITY_MODES=SEND_TO_KINDLE_SECURITY_MODES,
         LANGUAGE_CHOICES=language_choices,
         LANGUAGE_MAP=language_dict,
         DEFAULT_LANGUAGE_ID=language_dict.get("English", 1),
@@ -5843,6 +5983,7 @@ async def update_settings():
         "BLOCK_DOWNLOAD_ON_LOW_BUFFER",
         "AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD",
         "AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD_MIN_SIZE_ENABLED",
+        "SEND_TO_KINDLE_ENABLED",
     }
     for key in FALLBACK_CONFIG.keys():
         if key in boolean_fields: config_to_update[key] = key in form
@@ -6045,6 +6186,354 @@ async def update_default_search_filters():
         "message": "Default filters saved.",
         "filters": normalized
     })
+
+
+# --- SEND TO KINDLE LOGIC ---
+
+def build_send_to_kindle_settings(source=None):
+    """
+    Resolve the Send to Kindle settings, letting a probe payload override config.
+
+    ``source`` is the JSON body of the settings test endpoint: it holds the values
+    currently typed into the settings form, which may not be saved yet. Blank or
+    missing keys fall back to the running config.
+    """
+    def pick(key):
+        if source is not None:
+            raw = source.get(key)
+            if raw not in (None, ""):
+                return raw
+        return app.config.get(key, FALLBACK_CONFIG[key])
+
+    security = normalize_smtp_security(pick("SEND_TO_KINDLE_SMTP_SECURITY"))
+    port = parse_int_like(pick("SEND_TO_KINDLE_SMTP_PORT"))
+    if not port or port <= 0:
+        port = 465 if security == "ssl" else FALLBACK_CONFIG["SEND_TO_KINDLE_SMTP_PORT"]
+
+    username = str(pick("SEND_TO_KINDLE_SMTP_USERNAME") or "").strip()
+    from_address = str(pick("SEND_TO_KINDLE_FROM_ADDRESS") or "").strip()
+    if not from_address and EMAIL_ADDRESS_PATTERN.match(username):
+        # Most SMTP relays authenticate with the mailbox address, and Amazon only
+        # accepts mail from an approved sender, so the username is a safe default.
+        from_address = username
+
+    max_files = parse_int_like(pick("SEND_TO_KINDLE_MAX_FILES"))
+    if not max_files or max_files <= 0:
+        max_files = FALLBACK_CONFIG["SEND_TO_KINDLE_MAX_FILES"]
+
+    try:
+        max_attachment_mb = float(pick("SEND_TO_KINDLE_MAX_ATTACHMENT_MB"))
+    except (TypeError, ValueError):
+        max_attachment_mb = FALLBACK_CONFIG["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"]
+    if not math.isfinite(max_attachment_mb) or max_attachment_mb < 0:
+        max_attachment_mb = FALLBACK_CONFIG["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"]
+
+    return {
+        "host": str(pick("SEND_TO_KINDLE_SMTP_HOST") or "").strip(),
+        "port": port,
+        "security": security,
+        "username": username,
+        "password": str(pick("SEND_TO_KINDLE_SMTP_PASSWORD") or ""),
+        "from_address": from_address,
+        "recipients": normalize_email_list(pick("SEND_TO_KINDLE_RECIPIENTS")),
+        "formats": normalize_kindle_formats(pick("SEND_TO_KINDLE_FORMATS")),
+        "max_files": max_files,
+        "max_attachment_mb": max_attachment_mb,
+        "max_bytes": int(max_attachment_mb * 1024 * 1024) if max_attachment_mb > 0 else None,
+        "timeout": 60,
+    }
+
+
+def validate_send_to_kindle_settings(settings, *, require_recipients: bool = True) -> str | None:
+    """Return a human-readable problem with these settings, or None when usable."""
+    if not settings["host"]:
+        return "Set an SMTP server for Send to Kindle."
+    if not settings["from_address"]:
+        return "Set the From address for Send to Kindle (it must be an approved sender in your Amazon account)."
+    if not EMAIL_ADDRESS_PATTERN.match(settings["from_address"]):
+        return f"'{settings['from_address']}' is not a valid From address."
+    if require_recipients:
+        if not settings["recipients"]:
+            return "Add at least one Kindle delivery address (for example you@kindle.com)."
+        if not settings["formats"]:
+            return "Add at least one file format to send to Kindle."
+    return None
+
+
+def select_kindle_attachments(content_path, allowed_formats, *, max_files=3, max_bytes=None):
+    """
+    Pick the document files inside a finished download that should go to Kindle.
+
+    Candidates are grouped by folder + filename so a release shipping one book as
+    both EPUB and MOBI only mails the preferred format, where preference is the
+    order of ``allowed_formats``. Returns (selected, skipped_too_large).
+    """
+    formats = normalize_kindle_formats(allowed_formats)
+    if not formats or content_path is None:
+        return [], []
+
+    priority = {ext: index for index, ext in enumerate(formats)}
+
+    def extension(path):
+        return path.suffix.lstrip(".").lower()
+
+    try:
+        if content_path.is_file():
+            candidates = [content_path]
+        elif content_path.is_dir():
+            candidates = sorted(
+                (path for path in content_path.rglob("*") if path.is_file()),
+                key=lambda path: path.as_posix().casefold(),
+            )
+        else:
+            return [], []
+    except OSError:
+        return [], []
+
+    best_per_book = {}
+    skipped_too_large = []
+    for path in candidates:
+        ext = extension(path)
+        if ext not in priority:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if max_bytes is not None and size > max_bytes:
+            skipped_too_large.append((path, size))
+            continue
+        key = (path.parent.as_posix().casefold(), path.stem.casefold())
+        incumbent = best_per_book.get(key)
+        if incumbent is None or priority[ext] < priority[extension(incumbent)]:
+            best_per_book[key] = path
+
+    selected = sorted(
+        best_per_book.values(),
+        key=lambda path: (priority[extension(path)], path.as_posix().casefold()),
+    )
+    if max_files and max_files > 0:
+        selected = selected[:max_files]
+    return selected, skipped_too_large
+
+
+def build_kindle_message(settings, *, subject, body, attachment=None):
+    """Build one Send to Kindle email. Reads the attachment from disk (blocking)."""
+    message = EmailMessage()
+    message["From"] = settings["from_address"]
+    message["To"] = ", ".join(settings["recipients"])
+    message["Subject"] = subject
+    message.set_content(body)
+
+    if attachment is not None:
+        extension = attachment.suffix.lstrip(".").lower()
+        if extension in KINDLE_MIME_TYPES:
+            maintype, subtype = KINDLE_MIME_TYPES[extension]
+        else:
+            content_type, _ = mimetypes.guess_type(attachment.name)
+            maintype, _, subtype = (content_type or "application/octet-stream").partition("/")
+        message.add_attachment(
+            attachment.read_bytes(),
+            maintype=maintype or "application",
+            subtype=subtype or "octet-stream",
+            filename=attachment.name,
+        )
+    return message
+
+
+def _send_smtp_messages(settings, messages):
+    """Deliver messages over a single SMTP connection. Blocking: run in a thread."""
+    timeout = settings.get("timeout") or 60
+    if settings["security"] == "ssl":
+        server = smtplib.SMTP_SSL(
+            settings["host"], settings["port"], timeout=timeout, context=ssl.create_default_context()
+        )
+    else:
+        server = smtplib.SMTP(settings["host"], settings["port"], timeout=timeout)
+
+    try:
+        server.ehlo()
+        if settings["security"] == "starttls":
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
+        if settings["username"]:
+            server.login(settings["username"], settings.get("password") or "")
+        for message in messages:
+            server.send_message(message)
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            server.close()
+
+
+def _deliver_kindle_messages(settings, payloads):
+    """Build and send every message for one download. Blocking: run in a thread."""
+    _send_smtp_messages(settings, [build_kindle_message(settings, **payload) for payload in payloads])
+
+
+def _record_kindle_result(hash_val, **fields):
+    """Persist the Send to Kindle outcome on the torrent's metadata record."""
+    metadata = load_database()
+    if hash_val not in metadata:
+        return
+    metadata[hash_val].update(fields)
+    if fields.get("kindle_status") == "sent":
+        metadata[hash_val].pop("kindle_error", None)
+    save_database(metadata)
+
+
+async def send_download_to_kindle(hash_val: str, *, force: bool = False) -> tuple[bool, str]:
+    """Email the ebook files of a finished download to the configured Kindle addresses."""
+    hash_val = normalize_info_hash(hash_val)
+    settings = build_send_to_kindle_settings()
+    problem = validate_send_to_kindle_settings(settings)
+    if problem:
+        return False, problem
+
+    torrent_meta = load_database().get(hash_val, {})
+    if not force and torrent_meta.get("kindle_status") == "sent":
+        return True, f"Already sent to Kindle: {hash_val}."
+
+    if not torrent_client:
+        return False, "Client not initialized."
+
+    try:
+        info = await torrent_client.get_torrent_info(hash_val)
+    except Exception as e:
+        app.logger.warning(f"[KINDLE] Initial client fetch failed for {hash_val}: {e}. Attempting login.")
+        await torrent_client.login()
+        try:
+            info = await torrent_client.get_torrent_info(hash_val)
+        except Exception as e:
+            app.logger.error(f"[KINDLE] Client fetch error for {hash_val}: {e}")
+            return False, f"Client fetch error: {e}"
+
+    if not info:
+        return False, f"Torrent {hash_val} not found in client."
+
+    content_path = resolve_local_content_path(app.config, info)
+    if content_path is None:
+        return False, f"Unable to resolve source path for torrent {hash_val}."
+
+    title = str(torrent_meta.get("title") or info.get("name") or hash_val[:8]).strip()
+    author = str(torrent_meta.get("author") or "").strip()
+
+    selected, skipped_too_large = await asyncio.to_thread(
+        select_kindle_attachments,
+        content_path,
+        settings["formats"],
+        max_files=settings["max_files"],
+        max_bytes=settings["max_bytes"],
+    )
+
+    if not selected:
+        if skipped_too_large:
+            smallest_mb = min(size for _, size in skipped_too_large) / (1024 * 1024)
+            message = (
+                f"No file to send for '{title}': every candidate is over the "
+                f"{settings['max_attachment_mb']:.0f} MB attachment limit (smallest: {smallest_mb:.1f} MB)."
+            )
+        else:
+            message = (
+                f"No {'/'.join(settings['formats'])} file found for '{title}' under {content_path}."
+            )
+        app.logger.info(f"[KINDLE] {message}")
+        _record_kindle_result(
+            hash_val,
+            kindle_status="skipped",
+            kindle_error=message,
+            kindle_last_attempt=datetime.now().isoformat(),
+        )
+        return False, message
+
+    subject = f"{title} - {author}" if author else title
+    payloads = [
+        {
+            "subject": subject,
+            "body": f"Sent by MouseSearch: {path.name}",
+            "attachment": path,
+        }
+        for path in selected
+    ]
+
+    try:
+        await asyncio.to_thread(_deliver_kindle_messages, settings, payloads)
+    except Exception as e:
+        message = f"Send to Kindle failed for '{title}': {e}"
+        app.logger.error(f"[KINDLE] {message}")
+        await broadcast_toast(message, "danger")
+        _record_kindle_result(
+            hash_val,
+            kindle_status="failed",
+            kindle_error=str(e),
+            kindle_last_attempt=datetime.now().isoformat(),
+        )
+        return False, message
+
+    file_names = [path.name for path in selected]
+    recipient_summary = ", ".join(settings["recipients"])
+    _record_kindle_result(
+        hash_val,
+        kindle_status="sent",
+        kindle_sent_at=datetime.now().isoformat(),
+        kindle_files=file_names,
+        kindle_recipients=settings["recipients"],
+        kindle_last_attempt=datetime.now().isoformat(),
+    )
+
+    await broadcast_toast(f"Sent '{title}' to Kindle ({recipient_summary})", "success")
+    details = (
+        f"Sent {len(file_names)} file(s) for '{title}' to {recipient_summary}. "
+        f"Files: {', '.join(file_names)}."
+    )
+    app.logger.info(f"[KINDLE] {details}")
+    return True, details
+
+
+@app.route('/api/settings/test-kindle-email', methods=['POST'])
+async def test_kindle_email_settings():
+    """Open an SMTP session with the submitted credentials without sending mail."""
+    payload = await request.get_json(silent=True) or {}
+    settings = build_send_to_kindle_settings(payload)
+    if not settings["host"]:
+        return jsonify({
+            "status": "idle",
+            "message": "Enter an SMTP server to test Send to Kindle.",
+        })
+
+    problem = validate_send_to_kindle_settings(settings, require_recipients=False)
+    if problem:
+        return jsonify({"status": "error", "message": problem})
+
+    try:
+        await asyncio.to_thread(_send_smtp_messages, {**settings, "timeout": 15}, [])
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"SMTP connection failed: {e}" if str(e) else "SMTP connection failed.",
+        })
+
+    target = f"{settings['host']}:{settings['port']} ({settings['security']})"
+    if settings["username"]:
+        message = f"Connected to {target} as {settings['username']}."
+    else:
+        message = f"Connected to {target} without authentication."
+    return jsonify({"status": "success", "message": message})
+
+
+@app.route('/send_to_kindle/<hash_val>', methods=['POST'])
+async def send_to_kindle_webhook(hash_val):
+    """Manually (re)send an already-downloaded torrent to the Kindle addresses."""
+    try:
+        success, msg = await send_download_to_kindle(hash_val, force=True)
+    except Exception as e:
+        app.logger.error(f"[KINDLE] Exception during manual send for {hash_val}: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": f"Internal error: {e}"}), 500
+    return jsonify({
+        "status": "success" if success else "error",
+        "message": msg,
+    }), 200 if success else 500
 
 
 # --- ORGANIZE LOGIC ---
@@ -6679,7 +7168,7 @@ async def _grab_scheduled_result(item: dict, sdef: dict, is_vip_active: bool) ->
         "custom_destination_path": destination_path or None,
     }
     if resolved_hash:
-        if auto_organize_tracking_enabled():
+        if download_tracking_enabled():
             metadata = load_database()
             metadata[resolved_hash] = metadata_payload
             save_database(metadata)
