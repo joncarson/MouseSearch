@@ -6032,6 +6032,10 @@ async def update_settings():
     )
 
     if form.get("TORRENT_CLIENT_PASSWORD"): config_to_update["TORRENT_CLIENT_PASSWORD"] = form.get("TORRENT_CLIENT_PASSWORD")
+    # The Kindle SMTP password is never rendered back into the settings form, so a
+    # blank field means "unchanged" rather than "clear it".
+    if not form.get("SEND_TO_KINDLE_SMTP_PASSWORD"):
+        config_to_update["SEND_TO_KINDLE_SMTP_PASSWORD"] = app.config.get("SEND_TO_KINDLE_SMTP_PASSWORD", "")
     next_mam_id = normalize_mam_cookie_value(config_to_update.get("MAM_ID"))
     if next_mam_id != previous_mam_id:
         invalidate_dynamic_ip_state("MAM session cookie changed")

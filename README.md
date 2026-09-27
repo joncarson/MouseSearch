@@ -316,7 +316,7 @@ Notes:
 | `SEND_TO_KINDLE_SMTP_PORT` | No | SMTP port. Defaults to `587` (`465` is assumed when encryption is `ssl` and no port is set). |
 | `SEND_TO_KINDLE_SMTP_SECURITY` | No | `starttls`, `ssl`, or `none`. Defaults to `starttls`. |
 | `SEND_TO_KINDLE_SMTP_USERNAME` | No | SMTP username. Leave blank for an unauthenticated relay. |
-| `SEND_TO_KINDLE_SMTP_PASSWORD` | No | SMTP password (or app password). |
+| `SEND_TO_KINDLE_SMTP_PASSWORD` | No | SMTP password (or app password). Never rendered back into the settings form; leaving that field blank keeps the stored value. |
 | `SEND_TO_KINDLE_FROM_ADDRESS` | If Send to Kindle is enabled | Sender address. Must be on Amazon's Approved Personal Document E-mail List. Defaults to `SEND_TO_KINDLE_SMTP_USERNAME` when that is an email address. |
 | `APP_LOG_LEVEL` | No | Application log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Defaults to `INFO`. |
 | `LOG_HTTP_REQUESTS` | No | Enables app-level HTTP request logging with sanitized query params. Defaults to `false`. |
@@ -584,6 +584,8 @@ This fork can email a book to your Kindle as soon as its download finishes.
   (`kindle_status`, `kindle_sent_at`, `kindle_files`, `kindle_recipients`), which
   also keeps a re-checked torrent from being mailed twice. Enabling Send to
   Kindle turns on that metadata tracking even when auto-organize is off.
+- Mind your relay's own attachment ceiling: Gmail rejects anything over 25 MB,
+  which is lower than Amazon's ~50 MB, so set **Max Size** to match the relay.
 - `POST /send_to_kindle/<hash>` re-sends an already-downloaded torrent, ignoring
   the "already sent" marker. Failures also fire the `auto_send_to_kindle`
   auto-task webhook event.

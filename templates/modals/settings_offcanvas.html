@@ -717,9 +717,12 @@
               </div>
               <div class="form-floating mb-3">
                 <input type="password" class="form-control" id="SEND_TO_KINDLE_SMTP_PASSWORD"
-                  name="SEND_TO_KINDLE_SMTP_PASSWORD" value="{{ SEND_TO_KINDLE_SMTP_PASSWORD }}"
-                  placeholder="SMTP password" autocomplete="new-password">
-                <label for="SEND_TO_KINDLE_SMTP_PASSWORD" class="small">Password</label>
+                  name="SEND_TO_KINDLE_SMTP_PASSWORD" value=""
+                  placeholder="{% if SEND_TO_KINDLE_SMTP_PASSWORD %}Saved - leave blank to keep{% else %}SMTP password{% endif %}"
+                  autocomplete="new-password">
+                <label for="SEND_TO_KINDLE_SMTP_PASSWORD" class="small">
+                  Password {% if SEND_TO_KINDLE_SMTP_PASSWORD %}(saved){% endif %}
+                </label>
               </div>
               <div class="form-floating">
                 <input type="email" class="form-control" id="SEND_TO_KINDLE_FROM_ADDRESS"
