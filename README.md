@@ -584,6 +584,10 @@ This fork can email a book to your Kindle as soon as its download finishes.
   (`kindle_status`, `kindle_sent_at`, `kindle_files`, `kindle_recipients`), which
   also keeps a re-checked torrent from being mailed twice. Enabling Send to
   Kindle turns on that metadata tracking even when auto-organize is off.
+- Any `SEND_TO_KINDLE_*` value supplied in the environment wins over `config.json`
+  and is never written back to it, so mail credentials can stay in your secret
+  store and a settings save cannot shadow them. Those fields are shown read-only
+  in the UI with a note naming the variables; unset keys stay fully editable.
 - Mind your relay's own attachment ceiling: Gmail rejects anything over 25 MB,
   which is lower than Amazon's ~50 MB, so set **Max Size** to match the relay.
 - `POST /send_to_kindle/<hash>` re-sends an already-downloaded torrent, ignoring

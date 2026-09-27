@@ -551,6 +551,19 @@ SEND_TO_KINDLE_SECURITY_MODES = [
     {"id": "none", "label": "None (plain SMTP)"},
 ]
 EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+SEND_TO_KINDLE_CONFIG_KEYS = (
+    "SEND_TO_KINDLE_ENABLED",
+    "SEND_TO_KINDLE_RECIPIENTS",
+    "SEND_TO_KINDLE_FORMATS",
+    "SEND_TO_KINDLE_MAX_FILES",
+    "SEND_TO_KINDLE_MAX_ATTACHMENT_MB",
+    "SEND_TO_KINDLE_SMTP_HOST",
+    "SEND_TO_KINDLE_SMTP_PORT",
+    "SEND_TO_KINDLE_SMTP_SECURITY",
+    "SEND_TO_KINDLE_SMTP_USERNAME",
+    "SEND_TO_KINDLE_SMTP_PASSWORD",
+    "SEND_TO_KINDLE_FROM_ADDRESS",
+)
 
 
 def _split_list_like(value):
@@ -1145,6 +1158,18 @@ FALLBACK_CONFIG = {
 }
 ENV_ONLY_CONFIG_KEYS = {"QBITTORRENT_VERIFY_WEBUI_CERTIFICATE"}
 
+
+def env_locked_config_keys():
+    """
+    Send to Kindle settings that the environment pins.
+
+    Mail credentials belong in the deployment's secret store rather than in
+    config.json, which any settings save rewrites in plaintext. A key set in the
+    environment therefore wins over config.json and is never written back to it,
+    so a save made before the secrets were wired in cannot shadow them.
+    """
+    return {key for key in SEND_TO_KINDLE_CONFIG_KEYS if os.getenv(key) is not None}
+
 # Set up data directory and paths
 DATA_PATH = Path(os.getenv("DATA_PATH", FALLBACK_CONFIG["DATA_PATH"])).resolve()
 DATA_PATH.mkdir(parents=True, exist_ok=True)
@@ -1685,7 +1710,7 @@ def load_config():
                 pass # corrupted config, ignore
 
     json_overrides = dict(json_config)
-    for key in ENV_ONLY_CONFIG_KEYS:
+    for key in ENV_ONLY_CONFIG_KEYS | env_locked_config_keys():
         json_overrides.pop(key, None)
     if (
         "AUTO_BUY_PERSONAL_FL_ON_DOWNLOAD_MIN_SIZE_MB" not in json_overrides
@@ -1858,10 +1883,11 @@ def load_config():
     return config
 
 def save_config(config):
+    skip_keys = ENV_ONLY_CONFIG_KEYS | env_locked_config_keys()
     config_to_save = {
         key: config.get(key)
         for key in FALLBACK_CONFIG.keys()
-        if key not in ENV_ONLY_CONFIG_KEYS
+        if key not in skip_keys
     }
     with open(CONFIG_FILE, "w") as f:
         json.dump(config_to_save, f, indent=4)
@@ -5678,6 +5704,7 @@ async def index():
         AUTO_ORGANIZE_MEDIA_TYPES=AUTO_ORGANIZE_MEDIA_TYPES,
         KINDLE_DOCUMENT_FORMATS=KINDLE_DOCUMENT_FORMATS,
         SEND_TO_KINDLE_SECURITY_MODES=SEND_TO_KINDLE_SECURITY_MODES,
+        ENV_LOCKED_SETTINGS=sorted(env_locked_config_keys()),
         LANGUAGE_CHOICES=language_choices,
         LANGUAGE_MAP=language_dict,
         DEFAULT_LANGUAGE_ID=language_dict.get("English", 1),

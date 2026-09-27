@@ -1,12 +1,19 @@
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import app
 from app import (
     build_kindle_message,
+    env_locked_config_keys,
+    load_config,
     normalize_email_list,
     normalize_kindle_formats,
     normalize_smtp_security,
+    save_config,
     select_kindle_attachments,
 )
 
@@ -150,6 +157,65 @@ class BuildKindleMessageTests(unittest.TestCase):
 
         self.assertEqual(list(message.iter_attachments()), [])
         self.assertEqual(message.get_content().strip(), "Hello")
+
+
+class EnvLockedSettingsTests(unittest.TestCase):
+    """Mail settings from the environment win over config.json and stay out of it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config_file = Path(self._tmp.name) / "config.json"
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.object(app, "CONFIG_FILE", self.config_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_only_kindle_keys_present_in_the_environment_are_locked(self):
+        with mock.patch.dict(os.environ, {"SEND_TO_KINDLE_SMTP_HOST": "smtp.example.com"}, clear=False):
+            locked = env_locked_config_keys()
+
+        self.assertIn("SEND_TO_KINDLE_SMTP_HOST", locked)
+        self.assertNotIn("SEND_TO_KINDLE_SMTP_PASSWORD", locked)
+        self.assertNotIn("MAM_ID", locked)
+
+    def test_locked_keys_are_not_written_to_config_json(self):
+        with mock.patch.dict(os.environ, {"SEND_TO_KINDLE_SMTP_PASSWORD": "app-password"}, clear=False):
+            save_config({
+                "MAM_ID": "mam-cookie",
+                "SEND_TO_KINDLE_SMTP_PASSWORD": "app-password",
+                "SEND_TO_KINDLE_SMTP_HOST": "smtp.example.com",
+            })
+
+        stored = json.loads(self.config_file.read_text())
+        self.assertNotIn("SEND_TO_KINDLE_SMTP_PASSWORD", stored)
+        self.assertEqual(stored["SEND_TO_KINDLE_SMTP_HOST"], "smtp.example.com")
+        self.assertEqual(stored["MAM_ID"], "mam-cookie")
+
+    def test_a_stale_config_json_value_cannot_shadow_the_environment(self):
+        self.config_file.write_text(json.dumps({
+            "SEND_TO_KINDLE_ENABLED": False,
+            "SEND_TO_KINDLE_SMTP_HOST": "",
+            "SEND_TO_KINDLE_MAX_ATTACHMENT_MB": 49.0,
+        }))
+        environment = {
+            "SEND_TO_KINDLE_ENABLED": "true",
+            "SEND_TO_KINDLE_SMTP_HOST": "smtp.example.com",
+            "SEND_TO_KINDLE_MAX_ATTACHMENT_MB": "24",
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=False):
+            config = load_config()
+
+        self.assertIs(config["SEND_TO_KINDLE_ENABLED"], True)
+        self.assertEqual(config["SEND_TO_KINDLE_SMTP_HOST"], "smtp.example.com")
+        self.assertEqual(config["SEND_TO_KINDLE_MAX_ATTACHMENT_MB"], 24.0)
+
+    def test_config_json_still_wins_when_the_environment_is_silent(self):
+        self.config_file.write_text(json.dumps({"SEND_TO_KINDLE_SMTP_HOST": "smtp.saved.example"}))
+
+        config = load_config()
+
+        self.assertEqual(config["SEND_TO_KINDLE_SMTP_HOST"], "smtp.saved.example")
 
 
 if __name__ == "__main__":

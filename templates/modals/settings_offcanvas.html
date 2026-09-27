@@ -617,6 +617,15 @@
             </i>
           </h6>
 
+          {% if ENV_LOCKED_SETTINGS %}
+          <div class="alert alert-secondary small" role="note" id="env-locked-settings"
+            data-env-locked='{{ ENV_LOCKED_SETTINGS | tojson }}'>
+            <i class="bi bi-lock-fill me-1"></i>
+            Set by the environment, so these cannot be changed here:
+            <span class="font-monospace">{{ ENV_LOCKED_SETTINGS | join(', ') }}</span>.
+          </div>
+          {% endif %}
+
           <div class="card mb-3 border-secondary-subtle toggle-card">
             <div
               class="card-header border-bottom-0 bg-transparent d-flex justify-content-between align-items-center py-2 cursor-pointer noselect"

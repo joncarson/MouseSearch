@@ -3457,6 +3457,25 @@ document.addEventListener("DOMContentLoaded", async function () {
         }
     }
 
+    // Settings pinned by the environment are never persisted, so make them read-only
+    // instead of letting a save silently drop the edit.
+    (function markEnvLockedSettings() {
+        const banner = document.getElementById('env-locked-settings');
+        if (!banner) return;
+        let lockedKeys = [];
+        try {
+            lockedKeys = JSON.parse(banner.dataset.envLocked || '[]');
+        } catch (error) {
+            return;
+        }
+        lockedKeys.forEach(key => {
+            const field = document.getElementById(key);
+            if (!field) return;
+            field.disabled = true;
+            field.title = `Set by the ${key} environment variable.`;
+        });
+    })();
+
     async function checkKindleSmtpConnection() {
         const payload = {
             SEND_TO_KINDLE_SMTP_HOST: document.getElementById('SEND_TO_KINDLE_SMTP_HOST')?.value || '',
